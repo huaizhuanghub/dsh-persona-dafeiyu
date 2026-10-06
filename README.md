@@ -3,9 +3,7 @@
 把「人设」做成 DeepSeek Harness（DSH）的插件：装进某个 profile 后，该 profile 下所有会话的
 系统提示词里都会注入**当前选中的人设** —— 不用每次手动粘贴提示词。
 
-<!-- 上传到 GitHub 后，把两处 OWNER 换成你的用户名并取消注释，即可显示 CI 徽章：
-[![ci](https://github.com/OWNER/dsh-persona-dafeiyu/actions/workflows/ci.yml/badge.svg)](https://github.com/OWNER/dsh-persona-dafeiyu/actions/workflows/ci.yml)
--->
+[![ci](https://github.com/huaizhuanghub/dsh-persona-dafeiyu/actions/workflows/ci.yml/badge.svg)](https://github.com/huaizhuanghub/dsh-persona-dafeiyu/actions/workflows/ci.yml)
 
 - **内置人设**：大肥鱼、阿茶（写死在代码里，不可删除、不可覆盖）。
 - **导入人设**：在设置页里用文件导入或直接粘贴文本，自动生成可选条目。

@@ -20,6 +20,14 @@
     "test": "node test/verify.mjs",
     "privacy-check": "node scripts/privacy-check.mjs"
   },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/huaizhuanghub/dsh-persona-dafeiyu.git"
+  },
+  "homepage": "https://github.com/huaizhuanghub/dsh-persona-dafeiyu#readme",
+  "bugs": {
+    "url": "https://github.com/huaizhuanghub/dsh-persona-dafeiyu/issues"
+  },
   "keywords": [
     "deepseek-harness",
     "dsh",
