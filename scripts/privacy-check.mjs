@@ -14,7 +14,11 @@
  *   - 本机用户名、本机主机名（运行时取，脚本自身不存这些值）
  *   - 邮箱地址
  *   - IPv4 地址（放行回环、RFC 5737 文档示例段，以及本项目的测试夹具）
- *   - 疑似 API Key / Token / 私钥 / 口令赋值
+ *   - 已知平台的密钥前缀：GitHub / OpenAI / Anthropic / AWS / Google / Slack /
+ *     GitLab / npm / Stripe，以及 JWT、URL 内嵌账号口令、写死的 Bearer 凭据
+ *   - 高熵字符串：不依赖任何前缀知识，专抓「看起来随机」的长串
+ *   - 疑似口令 / 密钥赋值
+ *   - 私钥 PEM 头与 SSH 公钥
  *   - 不该入库的文件：环境变量文件、密钥、日志、打包产物、本地人设库
  *
  * 退出码：0 = 干净；1 = 有发现（逐条打印 file:line + 原因）。
@@ -79,6 +83,39 @@ function literalRule(id, why, needle) {
   }
 }
 
+/** 香农熵：越高越像随机生成的密钥。 */
+function entropy(text) {
+  const freq = new Map()
+  for (const ch of text) freq.set(ch, (freq.get(ch) ?? 0) + 1)
+  let h = 0
+  for (const count of freq.values()) {
+    const p = count / text.length
+    h -= p * Math.log2(p)
+  }
+  return h
+}
+
+/**
+ * 高熵字符串规则：不依赖任何厂商前缀知识，专抓「看起来随机」的长串。
+ * 要求同时含字母和数字，避免把长标识符 / 全小写单词算成密钥。
+ */
+function highEntropyRule(id, why, minLength = 24, minEntropy = 4.2) {
+  return {
+    id,
+    why,
+    find(line) {
+      const out = []
+      for (const match of line.matchAll(/[A-Za-z0-9+/=_-]{24,}/g)) {
+        const token = match[0]
+        if (token.length < minLength) continue
+        if (!/[0-9]/.test(token) || !/[A-Za-z]/.test(token)) continue
+        if (entropy(token) >= minEntropy) out.push(token)
+      }
+      return out
+    },
+  }
+}
+
 const RULES = [
   regexRule(
     'win-abs-path',
@@ -120,10 +157,26 @@ const RULES = [
     (text) => !PLACEHOLDER.test(text.replace(/^[^:=]*[:=]\s*["']?/, '')),
   ),
   regexRule(
-    'cloud-key',
-    '云厂商 / 平台密钥样式字符串',
-    /\b(?:sk-[A-Za-z0-9_-]{16,}|ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|AKIA[0-9A-Z]{16}|xox[baprs]-[A-Za-z0-9-]{10,})\b/g,
+    'known-key-prefix',
+    '已知平台的密钥前缀',
+    /\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-ant-[A-Za-z0-9_-]{16,}|sk-[A-Za-z0-9_-]{16,}|(?:AKIA|ASIA)[0-9A-Z]{16}|AIza[0-9A-Za-z_-]{30,}|xox[baprs]-[A-Za-z0-9-]{10,}|glpat-[A-Za-z0-9_-]{16,}|npm_[A-Za-z0-9]{30,}|(?:sk|pk|rk)_(?:live|test)_[A-Za-z0-9]{16,})\b/g,
   ),
+  regexRule(
+    'jwt',
+    'JWT 形式的令牌',
+    /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/g,
+  ),
+  regexRule(
+    'url-credentials',
+    'URL 里内嵌的账号口令',
+    /[a-z][a-z0-9+.-]*:\/\/[^/\s:@]+:[^/\s:@]+@[A-Za-z0-9.-]+/gi,
+  ),
+  regexRule(
+    'bearer-literal',
+    '写死的 Bearer 凭据',
+    /authorization\s*[:=]\s*["'`]?Bearer\s+[A-Za-z0-9._-]{12,}/gi,
+  ),
+  highEntropyRule('high-entropy', '高熵字符串（疑似随机生成的密钥）'),
   regexRule(
     'private-key',
     '私钥 PEM 头',
