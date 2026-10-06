@@ -1,0 +1,21 @@
+# 统一按 LF 入库，避免 Windows / Linux 之间反复出现「整文件都改了」的假 diff
+* text=auto eol=lf
+
+*.js    text eol=lf
+*.mjs   text eol=lf
+*.cjs   text eol=lf
+*.json  text eol=lf
+*.yml   text eol=lf
+*.yaml  text eol=lf
+*.md    text eol=lf
+*.txt   text eol=lf
+
+# 二进制：不做换行转换、不做文本 diff
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.gif   binary
+*.webp  binary
+*.ico   binary
+*.tgz   binary
+*.zip   binary

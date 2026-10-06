@@ -1,0 +1,59 @@
+# ── 依赖 ─────────────────────────────────────────────────
+node_modules/
+.pnpm-store/
+jspm_packages/
+bower_components/
+
+# ── 构建产物 / 打包 ──────────────────────────────────────
+dist/
+build/
+out/
+*.tgz
+*.zip
+*.7z
+
+# ── 缓存 ─────────────────────────────────────────────────
+.cache/
+.parcel-cache/
+.eslintcache
+.stylelintcache
+*.tsbuildinfo
+
+# ── 日志 ─────────────────────────────────────────────────
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# ── 自检留下的临时模块 ───────────────────────────────────
+test/.index.*.mjs
+
+# ── 本地运行数据：人设库绝不入库 ─────────────────────────
+personas.json
+storages/
+.dsh/
+
+# ── 本地配置与密钥 ───────────────────────────────────────
+.env
+.env.*
+!.env.example
+*.local
+config.local.*
+secrets.*
+*.pem
+*.key
+*.p12
+*.pfx
+.npmrc
+
+# ── 编辑器 / 操作系统 ────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+desktop.ini

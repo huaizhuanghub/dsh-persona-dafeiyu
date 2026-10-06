@@ -1,0 +1,31 @@
+# dsh-persona-dafeiyu · 插件 config 示例
+#
+# 这是**示例**，不是真实配置文件，插件不会读取它。真实改法二选一：
+#   1. Web 界面：「插件」页选中 dsh-persona-dafeiyu 那一行，直接改 config；
+#   2. 编辑文件：把下面这段合并进你 profile 的 cordis.patch.yml。
+#
+# 关于保密：本插件不读任何 API Key / Token / 口令，没有需要外置的敏感配置。
+# config 里唯一可能带上本机信息的字段是 personaFile（外部人设文件路径）——
+# 写文档、写示例、提 issue 时请一律用占位符，真实路径留在本机即可。
+
+- insert:
+    - id: persona-dafeiyu
+      name: dsh-persona-dafeiyu
+      config:
+        # 总开关：false 则完全不注册人设段落，设置页会显示「已停用」
+        enabled: true
+
+        # 直接把一段人设正文写进配置。
+        # 填了它，人设列表里会多出一条 id 为 config 的人设（不是最高优先级，
+        # 要用就去设置页把它「设为当前」）。
+        prefix: ''
+
+        # 或者指向一个外部人设文件；留空表示不用。
+        # 示例写法：personaFile: '<你的人设文件绝对路径>'
+        personaFile: ''
+
+        # 追加在工具指导之后的人设后缀（order 对齐 DEPLOYMENT_PERSONA_SUFFIX）
+        suffix: ''
+
+        # 显式指定前缀段落顺序；省略则用 DEPLOYMENT_PERSONA_PREFIX（默认 0）
+        # order: 0

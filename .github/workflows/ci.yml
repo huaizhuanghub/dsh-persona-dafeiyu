@@ -1,0 +1,34 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: verify (node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ['20', '22', '24']
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+
+      # 刻意不跑 npm install：本包没有运行时依赖，@deepseek-ai/* 全是 optional peer，
+      # 由 DSH 运行时提供。全新克隆也能直接跑，这正是本仓库想要的性质。
+      - name: 自检（21 项）
+        run: node test/verify.mjs
+
+      - name: 本机信息自查
+        run: node scripts/privacy-check.mjs
