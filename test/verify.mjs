@@ -637,7 +637,7 @@ function collectText(node, out = []) {
   return out
 }
 
-await check('客户端：注册设置页小节 + composer dock 探针，loading 分支能渲染', () => {
+await check('客户端：注册设置页小节 + composer dock，loading 分支能渲染', () => {
   const clientExports = loadClientWith(makeFakeReact())
   assert.deepEqual(clientExports.inject, ['slots', 'locale'])
 
@@ -650,6 +650,7 @@ await check('客户端：注册设置页小节 + composer dock 探针，loading 
         assert.equal(ns, 'personaDafeiyu')
         assert.ok(dicts.zh.nav && dicts.en.nav)
         assert.ok(dicts.zh.importAction && dicts.zh.setCurrent && dicts.zh.rename && dicts.zh.remove)
+        assert.ok(dicts.zh.scopeGlobal && dicts.zh.scopeSession && dicts.zh.dockFollow)
         return () => {}
       },
       bind: () => (key) => key,
@@ -667,18 +668,47 @@ await check('客户端：注册设置页小节 + composer dock 探针，loading 
   assert.equal(section.options.id, 'dafeiyu')
   assert.equal(section.options.order, 18)
   assert.equal(typeof section.options.label(), 'string')
+  assert.equal(dock.options.name, 'conversation.composer.dock')
+  assert.equal(dock.options.id, 'persona-dock')
 
   const tree = section.component({ t: (key) => key })
   assert.equal(tree.args[0], 'section')
   assert.equal(tree.args[1]['aria-label'], 'title')
   assert.ok(collectText(tree).includes('loading'))
 
-  // 阶段 0 探针：dock 插槽的注册参数与组件都能渲染出文字
-  assert.equal(dock.options.name, 'conversation.composer.dock')
-  assert.equal(dock.options.id, 'persona-probe')
-  const dockTree = dock.component({ t: (key) => key })
-  assert.equal(dockTree.args[1]['data-dsh-persona-probe'], 'dock')
-  assert.ok(collectText(dockTree).some((line) => line.includes('dock 探针')))
+  // dock 在 loading 阶段不渲染任何东西——读不到状态就不打扰用户
+  assert.equal(dock.component({ t: (key) => key, sessionId: 's1' }), null)
+})
+
+await check('客户端 dock：全局模式给范围开关，会话模式给「本会话用哪条」', async () => {
+  const ctx = makeCtx()
+  plugin.apply(ctx, undefined)
+  await sendMutate(ctx, { action: 'set-enabled', id: 'acha', enabled: true })
+
+  const has = (lines, needle) => lines.some((line) => line.includes(needle))
+  /** 用给定快照单独渲染 dock；每次新建 fake React，避免 useState 序号跟别的组件串台。 */
+  const renderDock = (value) => {
+    const clientExports = loadClientWith(makeFakeReact([{ status: 'ready', value }]))
+    return collectText(clientExports.PersonaDock({ t: (key) => key, sessionId: 's1' }))
+  }
+
+  const globalValue = (await readState(ctx, { url: `${STATUS_PATH}?sessionId=s1` })).payload.value
+  const globalText = renderDock(globalValue)
+  assert.ok(has(globalText, '大肥鱼'), '显示当前生效的人设名')
+  assert.ok(has(globalText, 'scopeGlobal') && has(globalText, 'scopeSession'), '两个范围开关都在')
+  assert.ok(!has(globalText, 'dockFollow'), '全局模式下不该出现会话切换器')
+
+  await sendMutate(ctx, { action: 'set-mode', mode: 'session' })
+  await sendMutate(ctx, { action: 'set-session-persona', sessionId: 's1', personaId: 'acha' })
+  const sessionValue = (await readState(ctx, { url: `${STATUS_PATH}?sessionId=s1` })).payload.value
+  const sessionText = renderDock(sessionValue)
+  assert.ok(has(sessionText, '阿茶'), '显示本会话挑中的人设')
+  assert.ok(has(sessionText, 'dockFollow'), '有「跟随全局」这一项')
+  assert.ok(has(sessionText, '大肥鱼'), '切换器里列出库里的其它人设')
+
+  // 会话模式但本会话没挑过 → 提示跟随全局
+  const otherValue = (await readState(ctx, { url: `${STATUS_PATH}?sessionId=s2` })).payload.value
+  assert.ok(has(renderDock(otherValue), 'dockFollow'), '未挑选的会话提示跟随全局')
 })
 
 await check('客户端：用真实宿主快照渲染 ready 分支（列表 / 导入区都在）', async () => {
