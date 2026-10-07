@@ -10,7 +10,7 @@
 ## 动手之前先跑一遍
 
 ```powershell
-npm test               # 21 项自检
+npm test               # 22 项自检
 npm run privacy-check  # 本机信息自查
 ```
 

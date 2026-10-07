@@ -199,6 +199,25 @@ await check('默认注册动态人设段落（order 0 / 禁止插值），渲染
   assert.equal(sectionText(ctx), plugin.BUNDLED_DAFEIYU)
 })
 
+await check('阶段 0 探针：提示词函数收到 context，并能从中取到会话 id', async () => {
+  const ctx = makeCtx()
+  plugin.apply(ctx, undefined)
+  const section = ctx.state.sections.find((entry) => entry.name === 'dafeiyu:persona')
+  // 模拟一次真实组装：dsh-agent 的 assembleContextFor(agent) 传的就是 { agent, scope }
+  const text = section.text({ agent: { session: { header: { id: 'sess-probe-1', cwd: 'C:/work' } } }, scope: {} })
+  assert.equal(text, plugin.BUNDLED_DAFEIYU, '带 context 调用时正文应与不带时一致')
+
+  const value = (await readState(ctx)).payload.value
+  assert.ok(value.probe, '状态快照应带 probe 字段')
+  assert.ok(value.probe.calls >= 1)
+  assert.deepEqual(value.probe.sessionIds, ['sess-probe-1'])
+  assert.ok(value.probe.contextKeys.includes('agent'), 'context 里应有 agent')
+  assert.ok(value.probe.headerKeys.includes('id'), 'session.header 里应有 id')
+
+  // 不带 context 的调用路径（老行为）也不能炸
+  assert.equal(typeof section.text(), 'string')
+})
+
 await check('状态接口：两条内置人设，默认当前是大肥鱼，来源标记为 builtin', async () => {
   const ctx = makeCtx()
   plugin.apply(ctx, undefined)
@@ -537,7 +556,7 @@ function collectText(node, out = []) {
   return out
 }
 
-await check('客户端：只注册设置页小节，loading 分支能渲染', () => {
+await check('客户端：注册设置页小节 + composer dock 探针，loading 分支能渲染', () => {
   const clientExports = loadClientWith(makeFakeReact())
   assert.deepEqual(clientExports.inject, ['slots', 'locale'])
 
@@ -560,9 +579,10 @@ await check('客户端：只注册设置页小节，loading 分支能渲染', ()
     },
   }
   clientExports.apply(ctx)
-  assert.deepEqual(injectedSlots, ['settings.section'])
-  assert.equal(registered.length, 1)
-  const [section] = registered
+  assert.deepEqual(injectedSlots, ['settings.section', 'conversation.composer.dock'])
+  assert.equal(registered.length, 2)
+
+  const [section, dock] = registered
   assert.equal(section.options.id, 'dafeiyu')
   assert.equal(section.options.order, 18)
   assert.equal(typeof section.options.label(), 'string')
@@ -571,6 +591,13 @@ await check('客户端：只注册设置页小节，loading 分支能渲染', ()
   assert.equal(tree.args[0], 'section')
   assert.equal(tree.args[1]['aria-label'], 'title')
   assert.ok(collectText(tree).includes('loading'))
+
+  // 阶段 0 探针：dock 插槽的注册参数与组件都能渲染出文字
+  assert.equal(dock.options.name, 'conversation.composer.dock')
+  assert.equal(dock.options.id, 'persona-probe')
+  const dockTree = dock.component({ t: (key) => key })
+  assert.equal(dockTree.args[1]['data-dsh-persona-probe'], 'dock')
+  assert.ok(collectText(dockTree).some((line) => line.includes('dock 探针')))
 })
 
 await check('客户端：用真实宿主快照渲染 ready 分支（列表 / 导入区都在）', async () => {

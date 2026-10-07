@@ -1,7 +1,6 @@
 # dsh-persona-dafeiyu · 人设库插件
 
-把「人设」做成 DeepSeek Harness（DSH）的插件：装进某个 profile 后，该 profile 下所有会话的
-系统提示词里都会注入**当前选中的人设** —— 不用每次手动粘贴提示词。
+启用后，所有会话的系统提示词里都会注入**当前选中的人设** —— 不用每次手动粘贴提示词。
 
 [![ci](https://github.com/huaizhuanghub/dsh-persona-dafeiyu/actions/workflows/ci.yml/badge.svg)](https://github.com/huaizhuanghub/dsh-persona-dafeiyu/actions/workflows/ci.yml)
 [![npm](https://img.shields.io/npm/v/dsh-persona-dafeiyu.svg)](https://www.npmjs.com/package/dsh-persona-dafeiyu)
@@ -23,7 +22,7 @@ dsh-persona-dafeiyu/
 ├─ lib/
 │  ├─ index.js                  宿主半侧：人设库 + 动态提示词段落 + 三条回环接口
 │  └─ client.js                 浏览器半侧：设置页「大肥鱼」小节（settings.section，order 18）
-├─ test/verify.mjs              不依赖 DSH 运行时的自检（21 项）
+├─ test/verify.mjs              不依赖 DSH 运行时的自检（22 项）
 ├─ scripts/privacy-check.mjs    本机信息自查：推送前跑一遍
 ├─ examples/
 │  ├─ persona.example.md        人设文件格式示例
@@ -171,7 +170,7 @@ dsh plugin --profile <profile> add "<本仓库绝对路径>"
 克隆下来**不需要 `npm install`** 就能验证：
 
 ```powershell
-npm test               # 21 项自检：宿主侧人设库 / 回环接口 / 客户端 bundle 渲染
+npm test               # 22 项自检：宿主侧人设库 / 回环接口 / 客户端 bundle 渲染
 npm run privacy-check  # 本机信息自查：绝对路径、用户名、邮箱、密钥、公网 IP…
 ```
 
