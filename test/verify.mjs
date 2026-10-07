@@ -680,35 +680,47 @@ await check('客户端：注册设置页小节 + composer dock，loading 分支�
   assert.equal(dock.component({ t: (key) => key, sessionId: 's1' }), null)
 })
 
-await check('客户端 dock：全局模式给范围开关，会话模式给「本会话用哪条」', async () => {
+await check('客户端 dock：全局模式给范围开关，会话模式折叠切换器', async () => {
   const ctx = makeCtx()
   plugin.apply(ctx, undefined)
   await sendMutate(ctx, { action: 'set-enabled', id: 'acha', enabled: true })
 
   const has = (lines, needle) => lines.some((line) => line.includes(needle))
-  /** 用给定快照单独渲染 dock；每次新建 fake React，避免 useState 序号跟别的组件串台。 */
-  const renderDock = (value) => {
-    const clientExports = loadClientWith(makeFakeReact([{ status: 'ready', value }]))
+  /**
+   * 用给定快照单独渲染 dock；每次新建 fake React，避免 useState 序号跟别的组件串台。
+   * dock 的 useState 顺序：0 = state、1 = busy、2 = open（切换器是否展开）。
+   */
+  const renderDock = (value, open) => {
+    const clientExports = loadClientWith(makeFakeReact([{ status: 'ready', value }, false, open === true]))
     return collectText(clientExports.PersonaDock({ t: (key) => key, sessionId: 's1' }))
   }
 
   const globalValue = (await readState(ctx, { url: `${STATUS_PATH}?sessionId=s1` })).payload.value
-  const globalText = renderDock(globalValue)
+  const globalText = renderDock(globalValue, false)
   assert.ok(has(globalText, '大肥鱼'), '显示当前生效的人设名')
   assert.ok(has(globalText, 'scopeGlobal') && has(globalText, 'scopeSession'), '两个范围开关都在')
   assert.ok(!has(globalText, 'dockFollow'), '全局模式下不该出现会话切换器')
+  assert.ok(!has(globalText, '▾'), '全局模式的人设名不是可展开的按钮')
 
   await sendMutate(ctx, { action: 'set-mode', mode: 'session' })
   await sendMutate(ctx, { action: 'set-session-persona', sessionId: 's1', personaId: 'acha' })
-  const sessionValue = (await readState(ctx, { url: `${STATUS_PATH}?sessionId=s1` })).payload.value
-  const sessionText = renderDock(sessionValue)
-  assert.ok(has(sessionText, '阿茶'), '显示本会话挑中的人设')
-  assert.ok(has(sessionText, 'dockFollow'), '有「跟随全局」这一项')
-  assert.ok(has(sessionText, '大肥鱼'), '切换器里列出库里的其它人设')
 
-  // 会话模式但本会话没挑过 → 提示跟随全局
+  // 折叠态：只显示人设名 + 展开提示，切换器不占位置
+  const sessionValue = (await readState(ctx, { url: `${STATUS_PATH}?sessionId=s1` })).payload.value
+  const collapsed = renderDock(sessionValue, false)
+  assert.ok(has(collapsed, '阿茶'), '折叠时也显示本会话挑中的人设')
+  assert.ok(has(collapsed, '▾'), '折叠时带展开提示')
+  assert.ok(!has(collapsed, 'dockFollow'), '折叠时切换器不渲染')
+
+  // 展开态：切换器列出「跟随全局 + 库里每条启用的人设」
+  const expanded = renderDock(sessionValue, true)
+  assert.ok(has(expanded, '▴'), '展开后箭头翻转')
+  assert.ok(has(expanded, 'dockFollow'), '有「跟随全局」这一项')
+  assert.ok(has(expanded, '大肥鱼'), '切换器里列出库里的其它人设')
+
+  // 会话模式但本会话没挑过 → 显示「当前人设 · 跟随全局」
   const otherValue = (await readState(ctx, { url: `${STATUS_PATH}?sessionId=s2` })).payload.value
-  assert.ok(has(renderDock(otherValue), 'dockFollow'), '未挑选的会话提示跟随全局')
+  assert.ok(has(renderDock(otherValue, false), 'dockFollow'), '未挑选的会话提示跟随全局')
 })
 
 await check('客户端：用真实宿主快照渲染 ready 分支（列表 / 导入区都在）', async () => {
