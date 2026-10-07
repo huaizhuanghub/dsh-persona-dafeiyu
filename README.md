@@ -22,7 +22,7 @@ dsh-persona-dafeiyu/
 ├─ lib/
 │  ├─ index.js                  宿主半侧：人设库 + 动态提示词段落 + 三条回环接口
 │  └─ client.js                 浏览器半侧：设置页「大肥鱼」小节（settings.section，order 18）
-├─ test/verify.mjs              不依赖 DSH 运行时的自检（22 项）
+├─ test/verify.mjs              不依赖 DSH 运行时的自检（跑一遍会打印项数）
 ├─ scripts/privacy-check.mjs    本机信息自查：推送前跑一遍
 ├─ examples/
 │  ├─ persona.example.md        人设文件格式示例
@@ -170,7 +170,7 @@ dsh plugin --profile <profile> add "<本仓库绝对路径>"
 克隆下来**不需要 `npm install`** 就能验证：
 
 ```powershell
-npm test               # 22 项自检：宿主侧人设库 / 回环接口 / 客户端 bundle 渲染
+npm test               # 自检：宿主侧人设库 / 生效范围 / 回环接口 / 客户端 bundle 渲染
 npm run privacy-check  # 本机信息自查：绝对路径、用户名、邮箱、密钥、公网 IP…
 ```
 

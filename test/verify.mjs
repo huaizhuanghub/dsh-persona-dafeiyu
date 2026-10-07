@@ -383,6 +383,87 @@ await check('启停：停用当前人设后提示词里不再注入，设为当�
   assert.equal(other.payload.value.active, true, '停用非当前人设不影响当前')
 })
 
+// ---------------------------------------------------------------- 生效范围：全局 / 会话
+
+await check('会话生效：会话挑的人设只影响该会话，其它会话回落到全局', async () => {
+  const ctx = makeCtx()
+  plugin.apply(ctx, undefined)
+  const section = ctx.state.sections.find((entry) => entry.name === 'dafeiyu:persona')
+  /** 模拟 dsh-agent 的 assembleContextFor(agent)：{ agent, scope } */
+  const asSession = (id) => section.text({ agent: { session: { header: { id } } }, scope: {} })
+
+  // 库文件在用例之间共享，前面的用例可能停用过阿茶——这里显式恢复，保证用例自给自足。
+  await sendMutate(ctx, { action: 'set-enabled', id: 'acha', enabled: true })
+
+  // 出厂是全局模式，此时会话选择不参与
+  const pick = await sendMutate(ctx, { action: 'set-session-persona', sessionId: 'sess-A', personaId: 'acha' })
+  assert.equal(pick.payload.ok, true)
+  assert.equal(asSession('sess-A'), plugin.BUNDLED_DAFEIYU, '全局模式下会话选择不应生效')
+
+  // 切到会话模式
+  const mode = await sendMutate(ctx, { action: 'set-mode', mode: 'session' })
+  assert.equal(mode.payload.ok, true)
+  assert.equal(mode.payload.value.mode, 'session')
+  assert.equal(asSession('sess-A'), plugin.BUNDLED_ACHA, '会话 A 用它自己挑的阿茶')
+  assert.equal(asSession('sess-B'), plugin.BUNDLED_DAFEIYU, '会话 B 没挑过 → 回落全局的大肥鱼')
+  assert.equal(section.text(), plugin.BUNDLED_DAFEIYU, '没有会话上下文时回落全局')
+
+  // 挑中的那条必须仍然启用；停用后回落全局
+  await sendMutate(ctx, { action: 'set-enabled', id: 'acha', enabled: false })
+  assert.equal(asSession('sess-A'), plugin.BUNDLED_DAFEIYU, '挑中的人设被停用 → 回落全局')
+  await sendMutate(ctx, { action: 'set-enabled', id: 'acha', enabled: true })
+
+  // 清除选择
+  const cleared = await sendMutate(ctx, { action: 'set-session-persona', sessionId: 'sess-A', personaId: null })
+  assert.equal(cleared.payload.ok, true)
+  assert.equal(asSession('sess-A'), plugin.BUNDLED_DAFEIYU, '清除后回落全局')
+
+  // 切回全局模式
+  const back = await sendMutate(ctx, { action: 'set-mode', mode: 'global' })
+  assert.equal(back.payload.value.mode, 'global')
+})
+
+await check('生效范围与会话选择的校验：非法模式 / 缺 sessionId / 未知人设都被拒', async () => {
+  const ctx = makeCtx()
+  plugin.apply(ctx, undefined)
+  const badMode = await sendMutate(ctx, { action: 'set-mode', mode: 'wat' })
+  assert.equal(badMode.payload.ok, false)
+  assert.match(badMode.payload.error, /未知生效范围/)
+
+  const noId = await sendMutate(ctx, { action: 'set-session-persona', personaId: 'acha' })
+  assert.equal(noId.payload.ok, false)
+  assert.match(noId.payload.error, /sessionId/)
+
+  const unknown = await sendMutate(ctx, { action: 'set-session-persona', sessionId: 's1', personaId: 'nope' })
+  assert.equal(unknown.payload.ok, false)
+  assert.match(unknown.payload.error, /找不到人设/)
+})
+
+await check('状态接口：带 ?sessionId= 给出该会话的视角，且模式落盘', async () => {
+  const ctx = makeCtx()
+  plugin.apply(ctx, undefined)
+  await sendMutate(ctx, { action: 'set-mode', mode: 'session' })
+  await sendMutate(ctx, { action: 'set-session-persona', sessionId: 'sess-X', personaId: 'acha' })
+
+  const mine = await readState(ctx, { url: `${STATUS_PATH}?sessionId=sess-X` })
+  const value = mine.payload.value
+  assert.equal(value.mode, 'session')
+  assert.equal(value.sessionId, 'sess-X')
+  assert.deepEqual(value.sessionPersona, { id: 'acha', name: '阿茶' })
+  assert.equal(value.personas.find((persona) => persona.id === 'acha').sessionPick, true)
+  assert.ok(value.sessionCount >= 1)
+
+  // 模式写进了库文件；会话选择本身不落盘
+  const onDisk = JSON.parse(fs.readFileSync(plugin.personaStorePath(), 'utf8'))
+  assert.equal(onDisk.mode, 'session')
+  assert.equal(onDisk.sessionPicks, undefined, '会话选择不该落盘')
+
+  // 另一个会话的视角不同
+  const other = await readState(ctx, { url: `${STATUS_PATH}?sessionId=sess-Y` })
+  assert.equal(other.payload.value.sessionPersona, null)
+  assert.equal(other.payload.value.mode, 'session')
+})
+
 // ---------------------------------------------------------------- 数据防护
 
 await check('内置不可覆盖：磁盘上伪造 id=dafeiyu 的导入条目会被丢弃', () => {
