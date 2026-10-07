@@ -4,6 +4,8 @@
 系统提示词里都会注入**当前选中的人设** —— 不用每次手动粘贴提示词。
 
 [![ci](https://github.com/huaizhuanghub/dsh-persona-dafeiyu/actions/workflows/ci.yml/badge.svg)](https://github.com/huaizhuanghub/dsh-persona-dafeiyu/actions/workflows/ci.yml)
+[![npm](https://img.shields.io/npm/v/dsh-persona-dafeiyu.svg)](https://www.npmjs.com/package/dsh-persona-dafeiyu)
+[![license](https://img.shields.io/npm/l/dsh-persona-dafeiyu.svg)](./LICENSE)
 
 - **内置人设**：大肥鱼、阿茶（写死在代码里，不可删除、不可覆盖）。
 - **导入人设**：在设置页里用文件导入或直接粘贴文本，自动生成可选条目。
@@ -39,39 +41,47 @@ dsh-persona-dafeiyu/
 
 - Node.js ≥ 20
 - DSH `0.2.0-rc.2`（兼容性见文末）
-- Git（从 GitHub 克隆时需要；只是本机目录安装的话不必）
 
-### 一、把仓库放到本机
+### 方式 A：从 npm 安装（推荐）
 
-```powershell
-git clone https://github.com/<你的用户名>/dsh-persona-dafeiyu.git
-cd dsh-persona-dafeiyu
+本包已发布到 npm，**不需要克隆仓库、不需要构建**。
+
+**界面上装**：侧边栏 → **插件** → **添加插件** → 输入包名：
+
+```text
+dsh-persona-dafeiyu
 ```
 
-不需要 `npm install`：本包没有运行时依赖，peer 依赖全部由 DSH 运行时提供。
-
-### 二、拿到本仓库的绝对路径
-
-下面的安装命令要用到它，在仓库根目录执行即可（不会打印任何敏感信息）：
+**命令行装**：
 
 ```powershell
-(Get-Location).Path
+dsh plugin --profile <profile> add dsh-persona-dafeiyu
 ```
-
-### 三、装进某个 profile
 
 `<profile>` 换成你自己的 profile 名。DSH 随安装自带的模板只有
 `acp` / `web` / `headless` / `sdk` / `sdk-minimal`，你自己建的那个叫什么就用什么。
 
-**方式 A：Web 插件页（推荐）**
+> 本包是纯 JavaScript、**没有构建脚本**，所以不会触发 pnpm 的「允许运行构建脚本」提示——
+> 输入包名即可装好，这是最省事的方式。
 
-侧边栏 → **插件** → 安装组合包 → 填上一步拿到的绝对路径。
+### 方式 B：从源码目录安装（改代码时用）
 
-**方式 B：命令行**
+```powershell
+git clone https://github.com/huaizhuanghub/dsh-persona-dafeiyu.git
+cd dsh-persona-dafeiyu
+(Get-Location).Path
+```
+
+最后一行打印的绝对路径，下面安装命令要用到。然后：
 
 ```powershell
 dsh plugin --profile <profile> add "<本仓库绝对路径>"
 ```
+
+或者在插件页「添加插件」里填这个绝对路径。
+
+本包**没有运行时依赖**（`@deepseek-ai/*` 全是 optional peer，由 DSH 运行时提供），
+所以克隆后不需要 `npm install` 就能直接跑自检。
 
 两种方式都会把本包写进 profile 的 `dsh.profile.bundles`。
 
@@ -202,6 +212,24 @@ npm run privacy-check  # 本机信息自查：绝对路径、用户名、邮箱�
 2. 把原文里写死的宿主产品名去掉，改为通用的「你的结对编程搭子」。
 
 其余内容（性格、口头禅、示例、金科玉律）原样保留。
+
+## 怎么让别人用上这个插件
+
+DSH **没有第三方插件目录**，所以这里先把机制说清楚，免得你以为「发到 npm 就会被收录」：
+
+- 侧边栏的**「插件」页只有两个分组**：「**官方**」是 DSH 随发行版自带的组合包，
+  「**已安装**」是你自己装过的。第三方插件**不会出现在任何目录里**。
+- 第三方插件的分发方式就是 **发布到 npm**，其他人用 **包名安装**：
+
+  ```powershell
+  dsh plugin --profile <profile> add dsh-persona-dafeiyu
+  ```
+
+  或者在插件页「添加插件」里输入包名——DSH 会去 registry 查这个名字并直接装上。
+
+所以「能被别人发现」的实际含义是：**包在 npm 上、名字可查、输入名字就能装**。
+本包已发布为 [`dsh-persona-dafeiyu`](https://www.npmjs.com/package/dsh-persona-dafeiyu)，
+纯 JS 无构建脚本，装上不需要任何额外授权。
 
 ## 隐私说明
 

@@ -1,6 +1,6 @@
 {
   "name": "dsh-persona-dafeiyu",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "人设插件 for DeepSeek Harness：内置大肥鱼与阿茶，支持导入自定义人设（文件或粘贴）、在设置页里切换 / 启停 / 重命名 / 删除，切换后下一个请求即时生效、无需重启。",
   "type": "module",
   "main": "lib/index.js",
