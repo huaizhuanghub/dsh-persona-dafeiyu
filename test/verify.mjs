@@ -790,6 +790,129 @@ await check('客户端：导入人设展开后渲染完整提示词', async () =
   assert.ok(text.includes('collapse'), '展开后按钮应变成「收起全文」')
 })
 
+await check('客户端：导入 / 重命名失败时保留用户输入，成功后才清空', async () => {
+  const ctx = makeCtx()
+  plugin.apply(ctx, undefined)
+  await sendMutate(ctx, { action: 'import', name: '已有人设', text: '已有正文' })
+  const value = (await readState(ctx)).payload.value
+  const existing = value.personas.find((persona) => persona.name === '已有人设')
+
+  // 假 React：记录每次 useState 的 setter 调用历史，才能观察失败后有没有被清空。
+  // 索引按 PersonaSettingsSection 里 useState 的声明序：4=renameId、6=name、7=text、8=picked。
+  const IDX = { renameId: 4, name: 6, text: 7, picked: 8 }
+  const setters = []
+  let stateIndex = 0
+  const makeRecordingReact = (overrides) => ({
+    useState: (initial) => {
+      const index = stateIndex
+      stateIndex += 1
+      const initialValue = typeof initial === 'function' ? initial() : initial
+      const setter = (next) => { setter.calls.push(next) }
+      setter.calls = []
+      setters[index] = setter
+      const seeded = overrides && overrides[index] !== undefined ? overrides[index] : initialValue
+      return [index === 0 ? { status: 'ready', value } : seeded, setter]
+    },
+    useCallback: (callback) => callback,
+    useEffect: () => {},
+  })
+
+  // 让重命名行处于展开状态，才能点到它的「保存」。
+  const overrides = []
+  overrides[IDX.renameId] = existing.id
+  const clientExports = loadClientWith(makeRecordingReact(overrides))
+  const registered = []
+  const renderCtx = {
+    effect: (callback) => callback(),
+    locale: { register: () => () => {}, bind: () => (key) => key },
+    slots: {
+      inject: (name, callback) => callback(),
+      register: (options, component) => { registered.push({ options, component }); return () => {} },
+    },
+  }
+  clientExports.apply(renderCtx)
+
+  // mutate 接口以业务失败应答（HTTP 200 + ok:false）——超长与重名都是这个形状。
+  const mutatePayloads = []
+  globalThis.fetch = (url, options) => {
+    mutatePayloads.push(JSON.parse(options.body))
+    return Promise.resolve({
+      ok: true,
+      json: () => Promise.resolve({ ok: false, error: '已存在同名人设「已有人设」' }),
+    })
+  }
+  const flush = () => new Promise((resolve) => setTimeout(resolve, 0))
+
+  const tree = registered[0].component({ t: (key) => key })
+
+  /** 在渲染树里按 key 找节点（jsx/jsxs 的参数形态：[type, props, key]）。 */
+  const findByKey = (node, key, out = []) => {
+    if (node === null || node === undefined || typeof node !== 'object') return out
+    if (Array.isArray(node)) {
+      for (const item of node) findByKey(item, key, out)
+      return out
+    }
+    if (node.args) {
+      if (node.args[2] === key) out.push(node.args)
+      findByKey(node.args[1], key, out)
+      return out
+    }
+    for (const [name, child] of Object.entries(node)) {
+      if (name === 'style') continue
+      findByKey(child, key, out)
+    }
+    return out
+  }
+
+  // --- 导入失败 ---
+  // 模拟用户粘了一大段正文、名字撞上已有条目。
+  findByKey(tree, 'import-name')[0][1].onChange({ target: { value: '已有人设' } })
+  findByKey(tree, 'import-text')[0][1].onChange({ target: { value: '用户辛苦粘的一大段正文' } })
+
+  const beforeClicks = {
+    name: setters[IDX.name].calls.length,
+    text: setters[IDX.text].calls.length,
+    picked: setters[IDX.picked].calls.length,
+  }
+
+  findByKey(tree, 'import-run')[0][1].onClick()
+  await flush()
+  await flush()
+
+  assert.equal(mutatePayloads.length, 1, '应当发出恰好一次 mutate 请求')
+  assert.equal(mutatePayloads[0].action, 'import')
+
+  // 关键断言：失败后不许有任何一次「清空」调用落到 name / text / picked 上。
+  const emptied = []
+  for (const [field, index] of Object.entries(IDX)) {
+    if (field === 'renameId') continue
+    const fresh = setters[index].calls.slice(beforeClicks[field])
+    for (const called of fresh) {
+      if (called === '') emptied.push(`${field} 被清空`)
+    }
+  }
+  assert.deepEqual(emptied, [], `导入失败不应清空用户输入，却发生了：${emptied.join('、')}`)
+
+  // --- 重命名失败 ---
+  // 重命名行初始就展开（override 过），此处直接点「保存」。
+  const renameIdCallsBefore = setters[IDX.renameId].calls.length
+  findByKey(tree, 'rename-name-input')
+  const renameSave = findByKey(tree, 'rename-save')[0]
+  assert.ok(renameSave, '重命名行应处于展开状态')
+  renameSave[1].onClick()
+  await flush()
+  await flush()
+
+  const closeCalls = setters[IDX.renameId].calls.slice(renameIdCallsBefore)
+  assert.deepEqual(
+    closeCalls.filter((called) => called === null),
+    [],
+    '重命名失败不应收起重命名行',
+  )
+
+  delete globalThis.fetch
+})
+
 // ---------------------------------------------------------------- 包清单
 
 await check('包清单：bundle patch / client bundle / patch 内容都对得上', () => {
