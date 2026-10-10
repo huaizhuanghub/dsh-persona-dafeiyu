@@ -493,6 +493,70 @@ await check('坏数据兜底：JSON 损坏时回退到空库而不是抛错', ()
   fs.rmSync(file, { force: true })
 })
 
+await check('启停单一来源：手改 personas.json 只动 disabled 数组也生效', async () => {
+  const file = plugin.personaStorePath()
+  fs.mkdirSync(path.dirname(file), { recursive: true })
+  // 导入人设的启停只认 store.disabled —— 不再有第二份 entry.enabled 可以漂移。
+  fs.writeFileSync(file, JSON.stringify({
+    version: 1,
+    mode: 'global',
+    current: 'custom-1',
+    disabled: ['custom-1'],
+    personas: [{ id: 'custom-1', name: '手改停用', text: '这段正文不该被注入' }],
+  }))
+
+  const ctx = makeCtx()
+  plugin.apply(ctx, undefined)
+
+  const value = (await readState(ctx)).payload.value
+  const entry = value.personas.find((persona) => persona.id === 'custom-1')
+  assert.equal(entry.enabled, false, 'disabled 数组里的导入人设应视为已停用')
+  assert.equal(value.active, false, '当前人设被停用 → 不应处于生效状态')
+  assert.equal(sectionText(ctx), '', '被停用的导入人设不应注入任何文本')
+
+  // 反向：只从 disabled 里移除，就应当恢复生效。
+  fs.writeFileSync(file, JSON.stringify({
+    version: 1,
+    mode: 'global',
+    current: 'custom-1',
+    disabled: [],
+    personas: [{ id: 'custom-1', name: '手改启用', text: '这段正文应当被注入' }],
+  }))
+  const ctx2 = makeCtx()
+  plugin.apply(ctx2, undefined)
+  assert.equal(sectionText(ctx2), '这段正文应当被注入', 'disabled 里没有它 → 应当注入')
+
+  fs.rmSync(file, { force: true })
+})
+
+await check('旧库迁移：entry.enabled=false 会并进 disabled，行为与旧版一致', () => {
+  const file = plugin.personaStorePath()
+  fs.mkdirSync(path.dirname(file), { recursive: true })
+  // 0.3.0 及更早写出的库：导入条目自带 enabled:false，disabled 数组是空的。
+  fs.writeFileSync(file, JSON.stringify({
+    version: 1,
+    current: 'dafeiyu',
+    disabled: [],
+    personas: [
+      { id: 'legacy-off', name: '老库里停用的', text: '老正文 A', enabled: false },
+      { id: 'legacy-on', name: '老库里启用的', text: '老正文 B', enabled: true },
+    ],
+  }))
+
+  const store = plugin.readStore()
+  assert.ok(store.disabled.includes('legacy-off'), '旧的 enabled:false 应被迁移进 disabled')
+  assert.ok(!store.disabled.includes('legacy-on'), 'enabled:true 不应进 disabled')
+
+  // 迁移后由 buildCatalog 统一判定，结果必须和旧版一致：一个停用一个启用。
+  const catalog = plugin.buildCatalog(undefined, store)
+  const off = catalog.find((persona) => persona.id === 'legacy-off')
+  const on = catalog.find((persona) => persona.id === 'legacy-on')
+  assert.equal(off.enabled, false, '老库里停用的应仍然是停用')
+  assert.equal(on.enabled, true, '老库里启用的应仍然是启用')
+
+  fs.rmSync(file, { force: true })
+})
+
 // ---------------------------------------------------------------- HTTP 纪律
 
 await check('接口纪律：非回环 403，方法不对 405，坏 JSON 400，未知操作报错', async () => {
@@ -560,6 +624,39 @@ await check('总开关：enabled=false 时不注册段落，状态里标记为�
   const value = (await readState(ctx)).payload.value
   assert.equal(value.enabled, false)
   assert.equal(value.active, false)
+})
+
+await check('suffix 计数：状态里的总注入量包含独立的 suffix 段落', async () => {
+  const suffixText = '【这是后缀段落，追加在工具指导之后】'
+  const ctx = makeCtx()
+  plugin.apply(ctx, { suffix: suffixText })
+
+  // suffix 是独立段落，注册在 DEPLOYMENT_PERSONA_SUFFIX 对应的 order 上。
+  const suffixSection = ctx.state.sections.find((entry) => entry.name === 'dafeiyu:persona-suffix')
+  assert.ok(suffixSection, 'suffix 段落应被注册')
+  assert.equal(suffixSection.text, suffixText)
+  assert.equal(suffixSection.order, 10200, 'order 应与 DEPLOYMENT_PERSONA_SUFFIX 对齐')
+
+  const value = (await readState(ctx)).payload.value
+  const main = plugin.BUNDLED_DAFEIYU.length
+  assert.equal(value.chars, main, 'chars 仍是主段落正文字数')
+  assert.equal(value.suffix.configured, true, '应报告 suffix 已配置')
+  assert.equal(value.suffix.chars, suffixText.length, 'suffix 字数应如实报告')
+  assert.equal(value.suffix.order, 10200, '应报告 suffix 的真实 order')
+  assert.equal(value.totalChars, main + suffixText.length, 'totalChars = 主段落 + suffix')
+
+  // 没配 suffix 时：configured 为 false、字数为 0，totalChars 回落到主段落。
+  const plain = makeCtx()
+  plugin.apply(plain, undefined)
+  const plainValue = (await readState(plain)).payload.value
+  assert.equal(plainValue.suffix.configured, false)
+  assert.equal(plainValue.suffix.chars, 0)
+  assert.equal(plainValue.totalChars, plainValue.chars)
+  assert.equal(
+    plain.state.sections.some((entry) => entry.name === 'dafeiyu:persona-suffix'),
+    false,
+    '未配 suffix 时不应注册该段落',
+  )
 })
 
 await check('兜底 schema 分支同样能跑通人设库', async () => {
@@ -688,10 +785,15 @@ await check('客户端 dock：全局模式给范围开关，会话模式折叠�
   const has = (lines, needle) => lines.some((line) => line.includes(needle))
   /**
    * 用给定快照单独渲染 dock；每次新建 fake React，避免 useState 序号跟别的组件串台。
-   * dock 的 useState 顺序：0 = state、1 = busy、2 = open（切换器是否展开）。
+   * dock 的 useState 顺序：0 = state、1 = busy、2 = open（切换器是否展开）、3 = failure。
    */
-  const renderDock = (value, open) => {
-    const clientExports = loadClientWith(makeFakeReact([{ status: 'ready', value }, false, open === true]))
+  const renderDock = (value, open, failure) => {
+    const clientExports = loadClientWith(makeFakeReact([
+      { status: 'ready', value },
+      false,
+      open === true,
+      failure === undefined ? null : failure,
+    ]))
     return collectText(clientExports.PersonaDock({ t: (key) => key, sessionId: 's1' }))
   }
 
@@ -721,6 +823,80 @@ await check('客户端 dock：全局模式给范围开关，会话模式折叠�
   // 会话模式但本会话没挑过 → 显示「当前人设 · 跟随全局」
   const otherValue = (await readState(ctx, { url: `${STATUS_PATH}?sessionId=s2` })).payload.value
   assert.ok(has(renderDock(otherValue, false), 'dockFollow'), '未挑选的会话提示跟随全局')
+
+  // 切换失败时必须给出可见提示 —— 以前这里是 `.catch(() => {})`，点了没反应。
+  const failed = renderDock(sessionValue, false, '当前运行时不支持会话级人设')
+  assert.ok(has(failed, 'dockSwitchFailed'), '失败时应渲染错误标题')
+  assert.ok(
+    has(failed, '当前运行时不支持会话级人设'),
+    '失败时应把宿主给的原因原样显示出来',
+  )
+  // 没有失败时不该凭空多出一行提示
+  assert.ok(!has(renderDock(sessionValue, false), 'dockSwitchFailed'), '成功路径不该出现错误提示')
+})
+
+await check('客户端 dock：提交失败会被显示出来，而不是被吞掉', async () => {
+  const ctx = makeCtx()
+  plugin.apply(ctx, undefined)
+  const value = (await readState(ctx)).payload.value
+
+  // 记录 dock 的 setter，才能观察失败后 failure 被设成了什么。
+  const setters = []
+  let index = 0
+  const clientExports = loadClientWith({
+    useState: (initial) => {
+      const at = index
+      index += 1
+      const setter = (next) => { setter.calls.push(next) }
+      setter.calls = []
+      setters[at] = setter
+      // dock 顺序：0=state 1=busy 2=open 3=failure
+      const seeded = at === 0 ? { status: 'ready', value } : initial
+      return [seeded, setter]
+    },
+    useCallback: (callback) => callback,
+    useEffect: () => {},
+  })
+
+  globalThis.fetch = () => Promise.resolve({
+    ok: true,
+    json: () => Promise.resolve({ ok: false, error: '当前运行时不支持会话级人设' }),
+  })
+
+  const tree = clientExports.PersonaDock({ t: (key) => key, sessionId: 's1' })
+
+  /** 按 key 找节点（jsx/jsxs 参数形态：[type, props, key]）。 */
+  const findByKey = (node, key, out = []) => {
+    if (node === null || node === undefined || typeof node !== 'object') return out
+    if (Array.isArray(node)) {
+      for (const item of node) findByKey(item, key, out)
+      return out
+    }
+    if (node.args) {
+      if (node.args[2] === key) out.push(node.args)
+      findByKey(node.args[1], key, out)
+      return out
+    }
+    for (const [name, child] of Object.entries(node)) {
+      if (name === 'style') continue
+      findByKey(child, key, out)
+    }
+    return out
+  }
+
+  const globalChip = findByKey(tree, 'mode-global')[0]
+  assert.ok(globalChip, '应能拿到范围开关按钮')
+  globalChip[1].onClick()
+  await new Promise((resolve) => setTimeout(resolve, 0))
+  await new Promise((resolve) => setTimeout(resolve, 0))
+
+  const failureCalls = setters[3].calls.filter((called) => typeof called === 'string')
+  assert.ok(
+    failureCalls.includes('当前运行时不支持会话级人设'),
+    `失败后应把原因写进 failure 状态，实际收到：${JSON.stringify(setters[3].calls)}`,
+  )
+
+  delete globalThis.fetch
 })
 
 await check('客户端：用真实宿主快照渲染 ready 分支（列表 / 导入区都在）', async () => {
