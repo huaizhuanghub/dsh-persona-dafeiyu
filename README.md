@@ -5,6 +5,8 @@
 [![ci](https://github.com/huaizhuanghub/dsh-persona-dafeiyu/actions/workflows/ci.yml/badge.svg)](https://github.com/huaizhuanghub/dsh-persona-dafeiyu/actions/workflows/ci.yml)
 [![npm](https://img.shields.io/npm/v/dsh-persona-dafeiyu.svg)](https://www.npmjs.com/package/dsh-persona-dafeiyu)
 [![license](https://img.shields.io/npm/l/dsh-persona-dafeiyu.svg)](./LICENSE)
+[![dsh.so risk](https://www.dsh.so/badge/dsh-persona-dafeiyu.svg)](https://www.dsh.so/zh/artifact/dsh-persona-dafeiyu/)
+[![listed on dsh-plugin.org](https://dsh-plugin.org/badges/listed.svg)](https://dsh-plugin.org/plugins/huaizhuanghub/dsh-persona-dafeiyu)
 
 - **内置人设**：大肥鱼、阿茶（写死在代码里，不可删除、不可覆盖）。
 - **导入人设**：在设置页里用文件导入或直接粘贴文本，自动生成可选条目。
