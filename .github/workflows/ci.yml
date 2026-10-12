@@ -32,3 +32,8 @@ jobs:
 
       - name: 本机信息自查
         run: node scripts/privacy-check.mjs
+
+      # 自查脚本自己的身份规则自检：容器 / CI 里本机用户名常常是 root、
+      # user 这类通用词，裸词搜索会误报。这一步把「该报 / 不该报」钉住。
+      - name: 自查脚本自检
+        run: node scripts/privacy-check.mjs --self-test

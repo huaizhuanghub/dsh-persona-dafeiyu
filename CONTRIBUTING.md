@@ -10,11 +10,12 @@
 ## 动手之前先跑一遍
 
 ```powershell
-npm test               # 自检
-npm run privacy-check  # 本机信息自查
+npm test                    # 自检
+npm run privacy-check       # 本机信息自查
+npm run privacy-self-test   # 自查脚本的身份规则自检
 ```
 
-两条都必须绿。自检把人设库隔离到临时 `DSH_HOME`，**不会碰**你真实的人设库。
+三条都必须绿。自检把人设库隔离到临时 `DSH_HOME`，**不会碰**你真实的人设库。
 
 ## 目录分工
 
@@ -45,6 +46,15 @@ npm run privacy-check  # 本机信息自查
    也不要写死全角标点（中英标点习惯不同，用 `labelSeparator` 这类键区分）。
    新增文案要同时补 `zh` 与 `en` 两份，自检会检查两份键是否对齐、
    以及 `en` 的值里有没有夹中文。
+7. **改 `privacy-check.mjs` 的身份规则时要跑 `npm run privacy-self-test`**：
+   本机用户名在容器 / CI 里常是 `root`、`user` 这类通用词，裸词搜索会把
+   `const root = …` 这种普通标识符报成泄漏、把 CI 打红。自检把「该报 / 不该报」
+   两类都钉住了，改动后别让它变红。
+   另外**该脚本会被它自己扫描一遍**，所以文件里（含注释和自检用例文本）
+   **不要写完整的家目录路径字面量、或带盘符的真实路径字样** —— 用字符串拼接，
+   注释里用「盘符:\Users\<名字>」这类占位写法。
+8. **改 `privacy-check.mjs` 后还要跑一次 `npm run privacy-check` 确认它是 PASS**：
+   脚本改动很容易不小心写进一条会被自己命中的样例。
 
 ## 提交与 PR
 

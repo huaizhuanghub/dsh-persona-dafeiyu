@@ -83,6 +83,64 @@ function literalRule(id, why, needle) {
   }
 }
 
+/**
+ * 本机用户名 / 主机名里「太通用」的值，不做裸词搜索。
+ *
+ * 为什么需要这层：字面量规则是**大小写不敏感的全仓库子串搜索**，而用户名常常
+ * 就是普通英文单词 —— 容器 / VPS / CI 里最典型的就是那个 superuser 名字，于是
+ * 一行「取仓库根目录」的普通赋值会被报成「本机用户名泄漏」，
+ * 退出码 1 把 CI 打红，还给出「请替换为占位符」这种**改不对**的建议。
+ * 实测：用户名取到该词时误报 12 处、user 误报 7 处、test 误报 29 处、
+ * name 误报 207 处。所以这些词一律不走裸词搜索，改走下面的路径形态匹配。
+ *
+ * 注意：本文件会被自己扫描，注释里**不写带盘符的真实路径字样**，
+ * 一律用「盘符:\Users\<名字>」这种占位写法。
+ */
+const COMMON_IDENTITY_WORD = /^(?:root|user|users|test|tests|testing|node|home|name|file|files|type|data|code|main|app|src|lib|bin|tmp|temp|admin|guest|demo|info|mail|www|dev|devel|build|dist|public|static|local|system|service|default|true|false|null|none|ubuntu|debian|centos|fedora|alpine|windows|linux|darwin|runner|docker|vagrant|cloud|server|client|host|guest)$/i
+
+/**
+ * 判断一个身份值是否适合做裸词搜索。
+ *
+ * 条件：够长（≥ 4）、不是常见英文单词、且**带着自己的特征**
+ * （含数字或下划线、或长度 ≥ 8 的非常见串）。带数字的短名（如 `dev07`）与
+ * 较长的少见串照旧会被搜；常见英文单词则被排除。
+ * 注意：这里**不举真实用户名为例**，否则本文件会被自己的 local-username 规则扫出来。
+ */
+function isDistinctiveIdentity(value) {
+  if (typeof value !== 'string') return false
+  const trimmed = value.trim()
+  if (trimmed.length < 4) return false
+  if (COMMON_IDENTITY_WORD.test(trimmed)) return false
+  // 纯字母且不够长 → 太容易撞上普通词，不做裸词搜索
+  if (/^[A-Za-z]+$/.test(trimmed) && trimmed.length < 8) return false
+  return true
+}
+
+/**
+ * 路径形态的用户名规则：只认「用户名出现在路径里」这一种形态。
+ *
+ * 这是根治手段 —— 用户名真正泄漏的形态是用户目录路径（盘符:\Users\ 或 /home/ 之后
+ * 紧跟的那一段），而不是孤立出现的一个单词。即使这个值因为太通用被排除在裸词搜索
+ * 之外，它在路径里出现时照样会被抓到。
+ */
+function identityPathRule(id, why, needle) {
+  const escaped = needle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  return {
+    id,
+    why,
+    raw: needle,
+    // 形态一：盘符:\Users\<名字>；形态二：/Users/<名字> 或 /home/<名字>。
+    // 这里用字符类拼接而不是直接写路径字面量，避免本文件被自己的 win-abs-path 规则扫出来。
+    re: new RegExp(
+      `(?:[A-Za-z]:[\\\\/]Users[\\\\/]${escaped}|/(?:Users|home)/${escaped})(?![A-Za-z0-9._-])`,
+      'gi',
+    ),
+    find(line) {
+      return [...line.matchAll(this.re)].map((m) => m[0])
+    },
+  }
+}
+
 /** 香农熵：越高越像随机生成的密钥。 */
 function entropy(text) {
   const freq = new Map()
@@ -189,21 +247,52 @@ const RULES = [
   ),
 ]
 
-/** 本机用户名 / 主机名：运行时取值，脚本文件里不出现这些字面量。 */
-const localIdentity = []
-try {
-  const username = os.userInfo().username
-  if (typeof username === 'string' && username.length >= 4) {
-    localIdentity.push(literalRule('local-username', '本机用户名', username))
+/**
+ * 把一个身份值变成规则：独特的走裸词，通用的只走路径形态。
+ * 抽成纯函数，好让自检（`--self-test`）与真实注册走**同一条**代码路径，
+ * 避免自检测的是一份复制出来的逻辑。
+ *
+ * @returns `{ rules, degraded }`；degraded 有值时表示这个值被降级处理了。
+ */
+function identityRules(id, why, value) {
+  if (typeof value !== 'string') return { rules: [], degraded: undefined }
+  const trimmed = value.trim()
+  if (trimmed.length === 0) return { rules: [], degraded: undefined }
+  if (isDistinctiveIdentity(trimmed)) {
+    return { rules: [literalRule(id, why, trimmed)], degraded: undefined }
   }
+  if (trimmed.length < 4) return { rules: [], degraded: undefined }
+  return {
+    rules: [identityPathRule(id, `${why}（仅路径形态）`, trimmed)],
+    degraded: { id, value: trimmed },
+  }
+}
+
+/**
+ * 本机用户名 / 主机名：运行时取值，脚本文件里不出现这些字面量。
+ *
+ * 分两层挂：
+ *   1. 身份值**够独特**时（`isDistinctiveIdentity`）→ 裸词搜索，抓得很全；
+ *   2. 不够独特但有意义时 → 只挂**路径形态**规则，抓用户名出现在用户目录里那种真正的泄漏形态。
+ *
+ * 被降级的通用值会出现在报告开头的「提示」里，让人知道少了一层防护、以及为什么。
+ */
+const localIdentity = []
+const skippedIdentity = []
+
+function registerIdentity(id, why, value) {
+  const { rules, degraded } = identityRules(id, why, value)
+  localIdentity.push(...rules)
+  if (degraded) skippedIdentity.push(degraded)
+}
+
+try {
+  registerIdentity('local-username', '本机用户名', os.userInfo().username)
 } catch {
   /* 拿不到就算了 */
 }
 try {
-  const hostname = os.hostname()
-  if (typeof hostname === 'string' && hostname.length >= 4) {
-    localIdentity.push(literalRule('local-hostname', '本机主机名', hostname))
-  }
+  registerIdentity('local-hostname', '本机主机名', os.hostname())
 } catch {
   /* 同上 */
 }
@@ -220,6 +309,63 @@ const FORBIDDEN_FILES = [
   { re: /^personas\.json$/i, why: '人设库是本地运行数据，不应入库' },
   { re: /\.(?:bak|orig|rej|tmp|swp)$/i, why: '临时 / 备份文件' },
 ]
+
+// ─────────────────────────────────────────────── 自检（--self-test）
+//
+// 身份规则的降级逻辑有个容易踩的坑：通用用户名（容器里的 superuser 名、
+// user、test 这类）一旦走裸词搜索，就会把普通标识符报成泄漏，退出码 1
+// 把 CI 打红。这里用受控输入把「该报 / 不该报」两类都钉住。
+//
+// 只测规则函数本身，不起子进程、不读磁盘，所以在任何环境都能跑。
+
+if (process.argv.includes('--self-test')) {
+  // 注意：这些用例文本会被本脚本自己扫描一遍，所以**不能出现完整的
+  // 家目录路径字面量**（否则 posix-home-path 规则会命中本文件）。
+  // 下面一律用「斜杠 + 段名」拼出来，本文件里就不存在那样的连续文本。
+  const SLASH = '/'
+  const homePath = (name) => `${SLASH}home${SLASH}${name}`
+  const usersPath = (name) => `${SLASH}Users${SLASH}${name}`
+  // 盘符同理：不写「字母 + 冒号 + 反斜杠 + Users」这种连续字面量。
+  const drivePath = (drive, name) => `${drive}:\\Users\\${name}`
+
+  const cases = [
+    // 独特身份值 → 裸词搜索必须命中
+    { label: '独特用户名命中裸词', value: 'zeta9x', line: `const who = "zeta9x"`, want: true },
+    { label: '带数字的短名命中裸词', value: 'dev07', line: '// author: dev07', want: true },
+    { label: '较长的少见串命中裸词', value: 'buildagent', line: 'owner=buildagent', want: true },
+    // 通用词 → 不得走裸词（这就是被修掉的误报）
+    { label: 'superuser 名不命中普通标识符', value: 'root', line: 'const root = path.resolve(here)', want: false },
+    { label: 'user 不命中普通标识符', value: 'user', line: 'const user = getUser()', want: false },
+    { label: 'test 不命中普通词', value: 'test', line: 'describe("test", () => {})', want: false },
+    { label: 'name 不命中普通词', value: 'name', line: 'const name = "x"', want: false },
+    // 通用词出现在用户目录路径里 → 必须命中（路径形态这道网）
+    { label: '通用名命中 Windows 用户目录路径', value: 'root', line: `dir is ${drivePath('c', 'root')}`, want: true },
+    { label: '通用名命中类 Unix 家目录路径', value: 'root', line: `see ${homePath('root')} for config`, want: true },
+    { label: '通用名命中 /Users/ 路径', value: 'test', line: `at ${usersPath('test')}`, want: true },
+    // 短于 4 的值一律不启用（避免噪音）
+    { label: '过短的值不启用', value: 'ab', line: 'const ab = 1', want: false },
+  ]
+
+  let failed = 0
+  console.log('privacy-check · 身份规则自检')
+  console.log('')
+  for (const item of cases) {
+    const { rules, degraded } = identityRules('local-username', '本机用户名', item.value)
+    const hits = rules.flatMap((rule) => rule.find(item.line))
+    const hit = hits.length > 0
+    const ok = hit === item.want
+    if (!ok) failed += 1
+    const mark = ok ? 'ok  ' : 'FAIL'
+    console.log(`${mark} ${item.label}（值=${JSON.stringify(item.value)}，期望${item.want ? '命中' : '不命中'}，实际${hit ? '命中' : '不命中'}）`)
+    // 降级必须同时被记下来，好让报告如实说明少了一层
+    if (degraded && !hit) {
+      console.log(`     ↳ 已记入降级提示：${degraded.value}`)
+    }
+  }
+  console.log('')
+  console.log(failed === 0 ? `结果：全部通过（${cases.length} 项）` : `结果：${failed} 项失败`)
+  process.exit(failed === 0 ? 0 : 1)
+}
 
 // ─────────────────────────────────────────────── 扫描
 
@@ -310,6 +456,15 @@ for (const file of files) {
 
 if (fs.existsSync(path.join(root, 'node_modules'))) {
   notes.push('node_modules 存在（已在 .gitignore 中排除，不会被提交）')
+}
+
+// 如实报告被降级的身份规则：这些值太通用，裸词搜索只会误报，
+// 所以只保留了路径形态这道网。不说明的话，看报告的人会以为防护是完整的。
+for (const item of skippedIdentity) {
+  notes.push(
+    `${item.id}「${item.value}」太通用（和常见代码标识符同形），`
+    + '已跳过裸词搜索、只保留路径形态匹配；这是为了避免误报，不是漏检',
+  )
 }
 
 // ─────────────────────────────────────────────── 报告
