@@ -218,7 +218,7 @@ await check('阶段 0 探针：提示词函数收到 context，并能从中取�
   assert.equal(typeof section.text(), 'string')
 })
 
-await check('状态接口：两条内置人设，默认当前是大肥鱼，来源标记为 builtin', async () => {
+await check('状态接口：内置人设齐全，默认当前是大肥鱼，来源标记为 builtin', async () => {
   const ctx = makeCtx()
   plugin.apply(ctx, undefined)
   const { status, payload } = await readState(ctx)
@@ -228,7 +228,11 @@ await check('状态接口：两条内置人设，默认当前是大肥鱼，来�
   assert.equal(value.current, 'dafeiyu')
   assert.equal(value.currentName, '大肥鱼')
   assert.equal(value.active, true)
-  assert.deepEqual(value.personas.map((persona) => persona.id), ['dafeiyu', 'acha'])
+  // 直接跟清单对齐，而不是写死数量：新增内置人设时这里不用改。
+  assert.deepEqual(
+    value.personas.map((persona) => persona.id),
+    plugin.BUILTIN_PERSONAS.map((persona) => persona.id),
+  )
   assert.ok(value.personas.every((persona) => persona.source === 'builtin' && persona.builtin === true))
   assert.equal(value.personas.filter((persona) => persona.current).length, 1)
   assert.ok(value.storePath.startsWith(testHome), `storePath 应落在测试 home：${value.storePath}`)
@@ -236,8 +240,22 @@ await check('状态接口：两条内置人设，默认当前是大肥鱼，来�
   assert.ok(value.personas.every((persona) => typeof persona.description === 'string' && persona.description.length > 10))
   assert.ok(value.personas.every((persona) => persona.text === undefined), '内置正文不应出现在状态快照里')
   const dump = JSON.stringify(value)
-  assert.ok(!dump.includes('圆滚滚'), '快照里不该有内置正文片段')
-  assert.ok(!dump.includes('编译器在喊'), '快照里不该有阿茶正文片段')
+  // 每条内置人设的正文都不该从状态接口泄漏出来。取正文里一段**不含换行**的
+  // 连续文本做指纹：JSON.stringify 会把换行转义成 \n，带换行的指纹会永远匹配不上，
+  // 那样的断言是假绿（阿茶正文以 "## 你是谁\n- 阿茶…" 开头，正是这种坑）。
+  for (const persona of plugin.BUILTIN_PERSONAS) {
+    const fingerprint = persona.text
+      .split('\n')
+      .map((line) => line.trim())
+      .filter((line) => line.length >= 12 && !line.startsWith('#'))
+      .sort((a, b) => b.length - a.length)[0]
+      ?.slice(0, 24)
+    assert.ok(
+      typeof fingerprint === 'string' && fingerprint.length >= 8,
+      `${persona.name} 应能取到一段可用作指纹的正文片段`,
+    )
+    assert.ok(!dump.includes(fingerprint), `${persona.name} 的正文不该出现在状态快照里`)
+  }
 })
 
 await check('正文接口：内置也能按 id 取到全文，未知 id / 缺 id / 坏方法都被拦', async () => {
@@ -466,15 +484,20 @@ await check('状态接口：带 ?sessionId= 给出该会话的视角，且模式
 
 // ---------------------------------------------------------------- 数据防护
 
-await check('内置不可覆盖：磁盘上伪造 id=dafeiyu 的导入条目会被丢弃', () => {
+await check('内置不可覆盖：磁盘上伪造内置 id 的导入条目会被丢弃', () => {
   const file = plugin.personaStorePath()
   fs.mkdirSync(path.dirname(file), { recursive: true })
+  // 每条内置人设都伪造一份，确认全部被挡掉；最后留一条正常的作为对照。
   fs.writeFileSync(file, JSON.stringify({
     version: 1,
     current: 'dafeiyu',
     disabled: [],
     personas: [
-      { id: 'dafeiyu', name: '假大肥鱼', text: '我要篡位' },
+      ...plugin.BUILTIN_PERSONAS.map((persona) => ({
+        id: persona.id,
+        name: `假${persona.name}`,
+        text: '我要篡位',
+      })),
       { id: 'custom-1', name: '正常导入', text: '正常内容' },
     ],
   }))
@@ -663,7 +686,7 @@ await check('兜底 schema 分支同样能跑通人设库', async () => {
   const ctx = makeCtx()
   fallbackPlugin.apply(ctx, undefined)
   const value = (await readState(ctx)).payload.value
-  assert.equal(value.personas.length, 2)
+  assert.equal(value.personas.length, fallbackPlugin.BUILTIN_PERSONAS.length)
   const switched = await sendMutate(ctx, { action: 'set-current', id: 'acha' })
   assert.equal(switched.payload.ok, true)
   assert.equal(sectionText(ctx), fallbackPlugin.BUNDLED_ACHA)
@@ -935,6 +958,121 @@ await check('客户端：用真实宿主快照渲染 ready 分支（列表 / 导
   // 自导入人设：提供「查看全文」
   assert.ok(text.includes('fullText'), '自导入人设应有「查看全文」入口')
   await sendMutate(ctx, { action: 'set-current', id: 'dafeiyu' })
+})
+
+await check('客户端 i18n：内置人名 / 简介与标点按语言取值，英文界面无中文残留', async () => {
+  const ctx = makeCtx()
+  plugin.apply(ctx, undefined)
+  await sendMutate(ctx, { action: 'set-current', id: 'acha' })
+  const value = (await readState(ctx)).payload.value
+
+  // 抓字典：注册时的回调里有 zh / en 两份。同时把 state 预置成 ready，
+  // 否则渲染的是 loading 分支，根本走不到名字 / 简介那一块。
+  let dicts
+  const registered = []
+  const renderCtx = {
+    effect: (callback) => callback(),
+    locale: {
+      register: (ns, dictionaries) => { dicts = dictionaries; return () => {} },
+      bind: () => (key) => key,
+    },
+    slots: {
+      inject: (name, callback) => callback(),
+      register: (options, component) => { registered.push(component); return () => {} },
+    },
+  }
+  const sectionWith = (t) => {
+    const clientExports = loadClientWith(makeFakeReact([{ status: 'ready', value }]))
+    const captured = []
+    clientExports.apply({
+      ...renderCtx,
+      slots: {
+        inject: (name, callback) => callback(),
+        register: (options, component) => { captured.push(component); return () => {} },
+      },
+    })
+    return collectText(captured[0]({ t }))
+  }
+  loadClientWith(makeFakeReact()).apply(renderCtx)
+  assert.ok(dicts && dicts.zh && dicts.en, '应能拿到 zh / en 两份字典')
+
+  // 真实宿主的 t 在缺键时**回显键名**，所以用 `?? key` 模拟，而不是造 MISSING 标记。
+  const tOf = (lang) => (key) => (dicts[lang][key] !== undefined ? dicts[lang][key] : key)
+
+  const enText = sectionWith(tOf('en'))
+  const enJoined = enText.join('\n')
+  assert.ok(enJoined.includes('Acha'), '英文界面应显示英文内置名 Acha')
+  assert.ok(enJoined.includes('Dafeiyu'), '英文界面应显示英文内置名 Dafeiyu')
+  assert.ok(enJoined.includes('A tsundere, squishy round fish'), '英文界面应显示英文简介')
+  assert.ok(!enJoined.includes('傲娇又软乎的胖鱼'), '英文界面不该出现中文简介')
+  assert.ok(!enJoined.includes('松弛幽默的结对编程搭子'), '英文界面不该出现阿茶的中文简介')
+  assert.ok(!enText.some((line) => line.includes('简介：')), '英文界面不该用全角冒号')
+  assert.ok(enText.some((line) => line.includes('About: ')), '英文界面的「简介」应使用半角冒号')
+
+  // 中文界面不能被改坏：同样的取词逻辑要落到中文。
+  const zhText = sectionWith(tOf('zh'))
+  const zhJoined = zhText.join('\n')
+  assert.ok(zhJoined.includes('大肥鱼') && zhJoined.includes('阿茶'), '中文界面应保留中文内置名')
+  assert.ok(zhJoined.includes('傲娇又软乎的胖鱼'), '中文界面应保留中文简介')
+  assert.ok(zhText.some((line) => line.includes('简介：')), '中文界面应使用全角冒号')
+
+  // 字典里没有该键（第三方语言包只翻一半）时要回退宿主原文，而不是把键名显示出来。
+  const tPartial = (key) => (key.startsWith('personaAbout') || key.startsWith('personaName') ? key : tOf('en')(key))
+  const partialJoined = sectionWith(tPartial).join('\n')
+  assert.ok(partialJoined.includes('阿茶'), '字典缺词条时应回退宿主给的名字')
+  assert.ok(!partialJoined.includes('personaAbout'), '回退时不该泄漏键名 personaAbout')
+
+  await sendMutate(ctx, { action: 'set-current', id: 'dafeiyu' })
+})
+
+await check('客户端 i18n：字典两份键对齐，且没有留下没人用的死键', () => {
+  let dicts
+  loadClientWith(makeFakeReact()).apply({
+    effect: (callback) => callback(),
+    locale: { register: (ns, dictionaries) => { dicts = dictionaries; return () => {} }, bind: () => (key) => key },
+    slots: { inject: (name, callback) => callback(), register: () => () => {} },
+  })
+
+  const zhKeys = Object.keys(dicts.zh)
+  const enKeys = Object.keys(dicts.en)
+  const missing = zhKeys.filter((key) => dicts.en[key] === undefined)
+  const extra = enKeys.filter((key) => dicts.zh[key] === undefined)
+  assert.deepEqual(missing, [], `en 缺少这些键：${missing.join(', ')}`)
+  assert.deepEqual(extra, [], `zh 缺少这些键：${extra.join(', ')}`)
+
+  // 曾经定义了却没人引用的四个键（界面改用就地渲染后就成了死键）。
+  for (const dead of ['disabled', 'source', 'suffixOrder', 'suffixNote']) {
+    assert.equal(dicts.zh[dead], undefined, `${dead} 应已从 zh 字典移除`)
+    assert.equal(dicts.en[dead], undefined, `${dead} 应已从 en 字典移除`)
+  }
+
+  // 英文侧的每个值都不该夹中文（这是「英文用户能看懂」的底线）。
+  for (const [key, value] of Object.entries(dicts.en)) {
+    assert.ok(
+      !/[\u4e00-\u9fff]/.test(value),
+      `en.${key} 不该包含中文：${JSON.stringify(value)}`,
+    )
+  }
+
+  // 每条内置人设都必须有名字与简介两份词条，否则英文界面会掉回中文原文。
+  // 新增内置人设时忘了补词条，这条会直接报出来。
+  for (const persona of plugin.BUILTIN_PERSONAS) {
+    const suffix = persona.id.charAt(0).toUpperCase() + persona.id.slice(1)
+    for (const field of ['personaName', 'personaAbout']) {
+      const key = `${field}${suffix}`
+      assert.ok(typeof dicts.en[key] === 'string' && dicts.en[key].length > 0, `en 字典缺少 ${key}`)
+      assert.ok(typeof dicts.zh[key] === 'string' && dicts.zh[key].length > 0, `zh 字典缺少 ${key}`)
+    }
+  }
+
+  // zh 侧的内置词条必须与宿主原文**逐字一致**：中文界面这次是不动声色的改动，
+  // 但文字被写在两处（宿主常量 + 字典）。改了宿主简介却忘了跟这里，就会漂移，
+  // 所以用断言把两处钉在一起。
+  for (const persona of plugin.BUILTIN_PERSONAS) {
+    const suffix = persona.id.charAt(0).toUpperCase() + persona.id.slice(1)
+    assert.equal(dicts.zh[`personaName${suffix}`], persona.name, `zh personaName${suffix} 应与宿主内置名一致`)
+    assert.equal(dicts.zh[`personaAbout${suffix}`], persona.description, `zh personaAbout${suffix} 应与宿主内置简介一致`)
+  }
 })
 
 await check('客户端：导入人设展开后渲染完整提示词', async () => {
