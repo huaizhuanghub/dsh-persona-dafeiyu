@@ -50,6 +50,9 @@
 
 ### 说明
 
+- **兼容性清单补上 `0.2.1-rc.3`**（整版实测通过）。起始页 chip 依赖的
+  `conversation.hero.options` 插槽正是这一版引入的，之前只核对过插槽存在、没做整版实测，
+  所以没敢列；实测后补进 `dsh.compatibility.dshReleases` 与 README 的兼容表。
 - 自检从 40 项扩到 **50 项**：起始页 chip 的渲染 / 打开浮层 / 落在当前会话上、
   三档持久化、`current: null` 的读取 / 解析 / 注入（「IM 工作区有人设、`$HOME` 注入 0 字」
   端到端）、`set-current(null)` 与重新打开、回落不改写 `current`、旧库向后兼容、

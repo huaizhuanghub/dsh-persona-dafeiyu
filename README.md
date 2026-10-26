@@ -363,10 +363,10 @@ CI 里的用户名常常就是 `root` 这类普通英文单词 —— 那会把 
 | `0.2.0-rc.2` | ✅ compatible（开发与自检都在这一版） |
 | `0.2.1-alpha.4` | ✅ compatible |
 | `0.2.1-rc.2` | ✅ compatible |
+| `0.2.1-rc.3` | ✅ compatible（起始页 chip 的 `conversation.hero.options` 就是这一版引入的） |
 
-> 起始页 chip 依赖的 `conversation.hero.options` 插槽，已在 `0.2.1-rc.3` 的宿主包里核对存在；
-> 但 0.2.1-rc.3 上的**整版实测**还没做，所以没列进兼容表。更老的宿主没有该插槽时 chip 不显示，
-> 其余功能不受影响。
+> 起始页 chip 依赖的 `conversation.hero.options` 插槽从 `0.2.1-rc.3` 起才有。
+> 更老的宿主没有它，`slots.inject` 不会回调，chip 不显示，其余功能不受影响。
 
 同一份清单也声明在 `package.json` 的 `dsh.compatibility.dshReleases` 里，供插件目录读取。
 **没列出的版本 = 没实测过**，不是"已知不兼容"——想确认可以自己跑 `npm test`。
