@@ -605,6 +605,187 @@ await check('坏数据兜底：JSON 损坏时回退到空库而不是抛错', ()
   fs.rmSync(file, { force: true })
 })
 
+// ---------------------------------------------------------------- issue #3：三档持久化 + 全局不启用
+
+/** 直接写一份人设库文件，模拟「上一次运行留下的磁盘状态」。 */
+function seedStore(payload) {
+  const file = plugin.personaStorePath()
+  fs.mkdirSync(path.dirname(file), { recursive: true })
+  fs.writeFileSync(file, JSON.stringify(payload))
+  return file
+}
+
+await check('issue #3 现象一：workspace 档能持久化，重启后仍是 workspace', async () => {
+  seedStore({
+    version: 1,
+    mode: 'workspace',
+    current: 'acha',
+    disabled: [],
+    personas: [],
+    workspaces: [{ cwd: '/work/im-bot', personaId: 'dafeiyu' }],
+  })
+
+  // 读盘这一层：三档都该原样保留（曾经只认 global / session）
+  for (const mode of ['global', 'workspace', 'session']) {
+    seedStore({ version: 1, mode, current: 'dafeiyu', disabled: [], personas: [], workspaces: [] })
+    assert.equal(plugin.readStore().mode, mode, `mode=${mode} 应能持久化`)
+  }
+
+  // 重建一份「重启后」的宿主：工作区规则必须还在生效，且不是靠 global 兜出来的
+  seedStore({
+    version: 1,
+    mode: 'workspace',
+    current: 'acha',
+    disabled: [],
+    personas: [],
+    workspaces: [{ cwd: '/work/im-bot', personaId: 'dafeiyu' }],
+  })
+  const ctx = makeCtx()
+  plugin.apply(ctx, undefined)
+  const value = (await readState(ctx)).payload.value
+  assert.equal(value.mode, 'workspace', '重启后不应被静默降级成 global')
+  assert.equal(
+    value.workspaces.find((row) => row.cwd === '/work/im-bot')?.personaId,
+    'dafeiyu',
+    '工作区规则应原样读回',
+  )
+
+  // 真正的用户场景：一个 web profile 挂着 IM 机器人，机器人工作区用大肥鱼，
+  // 其它会话（$HOME）完全不要人设。
+  const section = ctx.state.sections.find((entry) => entry.name === 'dafeiyu:persona')
+  const asCwd = (cwd) => section.text({ agent: { session: { header: { id: 's1', cwd } } }, scope: {} })
+  assert.equal(asCwd('/work/im-bot'), plugin.BUNDLED_DAFEIYU, 'IM 工作区用大肥鱼')
+})
+
+await check('issue #3 现象二：current=null 是合法状态，表示全局不启用人设', async () => {
+  seedStore({
+    version: 1,
+    mode: 'workspace',
+    current: null,
+    disabled: [],
+    personas: [],
+    workspaces: [{ cwd: '/work/im-bot', personaId: 'dafeiyu' }],
+  })
+
+  // 1. 读盘不能把它顶成 dafeiyu
+  const store = plugin.readStore()
+  assert.equal(store.current, null, 'current:null 应原样保留')
+
+  // 2. 解析时遇 null 直接返回「无」，且不改写 store.current
+  const catalog = plugin.buildCatalog(undefined, store)
+  assert.equal(plugin.currentPersonaOf(catalog, store), undefined, 'current=null → 没有全局人设')
+  assert.equal(store.current, null, 'currentPersonaOf 不许改写 current=null')
+
+  // 3. 阶梯：工作区命中，其它地方注入 0 字
+  const im = plugin.resolvePersona(catalog, store, { cwd: '/work/im-bot' })
+  assert.equal(im.persona?.id, 'dafeiyu')
+  assert.equal(im.source, 'workspace')
+  const home = plugin.resolvePersona(catalog, store, { cwd: '/work/home' })
+  assert.equal(home.persona, undefined, '没被任何一档挑中 → 无人设')
+  assert.equal(home.source, 'global')
+
+  // 4. 端到端：同一份盘上状态，IM 工作区注入正文，$HOME 注入空串
+  const ctx = makeCtx()
+  plugin.apply(ctx, undefined)
+  const section = ctx.state.sections.find((entry) => entry.name === 'dafeiyu:persona')
+  const asCwd = (cwd, id = 's1') => section.text({ agent: { session: { header: { id, cwd } } }, scope: {} })
+  assert.equal(asCwd('/work/im-bot'), plugin.BUNDLED_DAFEIYU, 'IM 工作区仍是 635 字的大肥鱼')
+  assert.equal(asCwd('/work/home'), '', '$HOME 会话不应注入任何人设')
+
+  const value = (await readState(ctx, { url: `${STATUS_PATH}?cwd=${encodeURIComponent('/work/home')}` })).payload.value
+  assert.equal(value.current, null, '状态接口应如实报告 current=null')
+  assert.equal(value.globalOff, true, 'globalOff 应明确说明「是用户关掉的」，而不是「找不到」')
+  assert.equal(value.active, false, '全局不启用 → active 应为 false')
+
+  // 反向：正常有全局人设时 globalOff 必须是 false
+  seedStore({ version: 1, mode: 'global', current: 'acha', disabled: [], personas: [], workspaces: [] })
+  const ctx2 = makeCtx()
+  plugin.apply(ctx2, undefined)
+  const normal = (await readState(ctx2)).payload.value
+  assert.equal(normal.globalOff, false, '有全局人设时 globalOff 必须是 false')
+  assert.equal(normal.current, 'acha')
+})
+
+await check('issue #3 向后兼容：旧库文件（没有 mode / current 缺省）行为不变', async () => {
+  // 0.3 / 0.4 时代的库：没有 mode 字段、current 是普通字符串
+  seedStore({
+    version: 1,
+    current: 'acha',
+    disabled: [],
+    personas: [],
+  })
+  const old = plugin.readStore()
+  assert.equal(old.mode, 'global', '没有 mode 字段 → 仍回落 global')
+  assert.equal(old.current, 'acha', 'current 是字符串 → 原样读回')
+  assert.deepEqual(old.workspaces, [], '没有 workspaces 字段 → 空数组')
+
+  // current 缺省（老库可能根本没写过这个键）→ 仍是 dafeiyu，不是 null
+  seedStore({ version: 1, disabled: [], personas: [] })
+  const noCurrent = plugin.readStore()
+  assert.equal(noCurrent.current, 'dafeiyu', 'current 缺省应保持出厂默认，不能被当成「关闭」')
+
+  // 只有显式写 null 才关
+  seedStore({ version: 1, current: null, disabled: [], personas: [] })
+  assert.equal(plugin.readStore().current, null, '显式 null 才表示关闭')
+})
+
+await check('issue #3：set-current 接受 null，也接受把全局人设重新打开', async () => {
+  seedStore({ version: 1, mode: 'global', current: 'acha', disabled: [], personas: [], workspaces: [] })
+  const ctx = makeCtx()
+  plugin.apply(ctx, undefined)
+  assert.equal(sectionText(ctx), plugin.BUNDLED_ACHA, '前置：当前是阿茶')
+
+  // 关掉全局
+  const off = await sendMutate(ctx, { action: 'set-current', id: null })
+  assert.equal(off.payload.ok, true, `关闭全局失败：${off.payload.error}`)
+  assert.equal(off.payload.value.current, null)
+  assert.equal(sectionText(ctx), '', '全局关掉后不注入任何文本')
+
+  // 再打开：交回内置默认
+  const on = await sendMutate(ctx, { action: 'set-current', id: plugin.DEFAULT_PERSONA_ID })
+  assert.equal(on.payload.ok, true)
+  assert.equal(sectionText(ctx), plugin.BUNDLED_DAFEIYU, '重新打开后回到默认人设')
+
+  // 传具体 id 的行为完全不变
+  const acha = await sendMutate(ctx, { action: 'set-current', id: 'acha' })
+  assert.equal(acha.payload.ok, true)
+  assert.equal(sectionText(ctx), plugin.BUNDLED_ACHA)
+
+  // 未知 id 仍然报错（别把 null 的特殊处理扩大成「什么都放行」）
+  const bad = await sendMutate(ctx, { action: 'set-current', id: 'nope' })
+  assert.equal(bad.payload.ok, false)
+  assert.match(bad.payload.error, /找不到人设/)
+
+  // 连 id 都没传 ≠ 关闭：前者是调用错误，不能被当成「关掉全局」
+  await sendMutate(ctx, { action: 'set-current', id: 'acha' })
+  const missing = await sendMutate(ctx, { action: 'set-current' })
+  assert.equal(missing.payload.ok, false, '缺 id 应当报错，而不是静默关闭')
+  assert.match(missing.payload.error, /缺少人设 id/)
+  assert.equal(sectionText(ctx), plugin.BUNDLED_ACHA, '报错后当前人设不应被改动')
+})
+
+await check('issue #3：解析回落不该反过来抹掉用户的选择', async () => {
+  // 用户挑了 custom-1，但把它停用了 → 解析暂时回落到内置默认。
+  seedStore({
+    version: 1,
+    mode: 'global',
+    current: 'custom-1',
+    disabled: ['custom-1'],
+    personas: [{ id: 'custom-1', name: '临时停用', text: '正文' }],
+    workspaces: [],
+  })
+  const ctx = makeCtx()
+  plugin.apply(ctx, undefined)
+  const value = (await readState(ctx)).payload.value
+  assert.equal(value.current, 'custom-1', '停用不等于放弃：current 仍应指着它')
+  assert.equal(value.active, false, '停用期间不注入')
+
+  // 重新启用后应自动恢复，不需要用户再点一次「设为当前」
+  const back = await sendMutate(ctx, { action: 'set-enabled', id: 'custom-1', enabled: true })
+  assert.equal(back.payload.ok, true)
+  assert.equal(sectionText(ctx), '正文', '重新启用后应自动回到这条人设')
+})
+
 await check('启停单一来源：手改 personas.json 只动 disabled 数组也生效', async () => {
   const file = plugin.personaStorePath()
   fs.mkdirSync(path.dirname(file), { recursive: true })
@@ -873,10 +1054,15 @@ await check('客户端：注册设置页小节 + composer dock，loading 分支�
     },
   }
   clientExports.apply(ctx)
-  assert.deepEqual(injectedSlots, ['settings.section', 'conversation.composer.dock', 'shell.overlay'])
-  assert.equal(registered.length, 3)
+  assert.deepEqual(injectedSlots, [
+    'settings.section',
+    'conversation.composer.dock',
+    'shell.overlay',
+    'conversation.hero.options',
+  ])
+  assert.equal(registered.length, 4)
 
-  const [section, dock, picker] = registered
+  const [section, dock, picker, heroChip] = registered
   assert.equal(section.options.id, 'dafeiyu')
   assert.equal(section.options.order, 18)
   assert.equal(typeof section.options.label(), 'string')
@@ -885,6 +1071,9 @@ await check('客户端：注册设置页小节 + composer dock，loading 分支�
   // 会话人设选择浮层挂在整帧浮层插槽上（不往 document.body 追加 DOM）
   assert.equal(picker.options.name, 'shell.overlay')
   assert.equal(picker.options.id, 'persona-picker')
+  // 新会话起始页的人设 chip：issue #2 的入口
+  assert.equal(heroChip.options.name, 'conversation.hero.options')
+  assert.equal(heroChip.options.id, 'persona-hero')
 
   const tree = section.component({ t: (key) => key })
   assert.equal(tree.args[0], 'section')
@@ -895,6 +1084,8 @@ await check('客户端：注册设置页小节 + composer dock，loading 分支�
   assert.equal(dock.component({ t: (key) => key, sessionId: 's1' }), null)
   // 浮层默认关闭时也不渲染任何东西
   assert.equal(picker.component({ t: (key) => key }), null)
+  // hero chip 同样在 loading 阶段安静地不渲染
+  assert.equal(heroChip.component({ t: (key) => key, sessionId: 's1' }), null)
 })
 
 await check('客户端 dock：全局模式给范围开关，会话模式折叠切换器', async () => {
@@ -1215,6 +1406,83 @@ await check('客户端：用真实宿主快照渲染 ready 分支（列表 / 导
   await sendMutate(ctx, { action: 'set-current', id: 'dafeiyu' })
 })
 
+await check('客户端：全局不启用时设置页显示「不启用」并可一键恢复（issue #3）', async () => {
+  seedStore({ version: 1, mode: 'workspace', current: null, disabled: [], personas: [], workspaces: [] })
+  const ctx = makeCtx()
+  plugin.apply(ctx, undefined)
+  const value = (await readState(ctx)).payload.value
+  assert.equal(value.current, null, '前置：全局已关闭')
+
+  const renderSection = (payload) => {
+    const clientExports = loadClientWith(makeFakeReact([{ status: 'ready', value: payload }]))
+    const registered = []
+    clientExports.apply({
+      effect: (callback) => callback(),
+      locale: { register: () => () => {}, bind: () => (key) => key },
+      slots: {
+        inject: (name, callback) => callback(),
+        register: (options, component) => { registered.push({ options, component }); return () => {} },
+      },
+    })
+    return registered[0].component({ t: (key) => key })
+  }
+
+  const offTree = renderSection(value)
+  const offText = collectText(offTree)
+  // 以前这里会显示「—」，看上去像数据坏了
+  assert.ok(offText.includes('currentNone'), '当前人设应显示为「不启用」，而不是空 / 破折号')
+  assert.ok(offText.includes('disabledByGlobalOff'), '状态行应说明全局人设已关闭')
+  assert.ok(offText.includes('enableGlobal'), '应给出「恢复全局人设」按钮')
+  assert.ok(!offText.includes('disableGlobal'), '已关闭时不该再显示「不启用」')
+
+  // 打开着的状态：应显示「不启用全局人设」按钮
+  const onValue = (await (async () => {
+    await sendMutate(ctx, { action: 'set-current', id: 'dafeiyu' })
+    return (await readState(ctx)).payload.value
+  })())
+  const onTree = renderSection(onValue)
+  const onText = collectText(onTree)
+  assert.ok(onText.includes('disableGlobal'), '正常状态应提供「不启用全局人设」按钮')
+  assert.ok(!onText.includes('currentNone'), '正常状态不该显示「不启用」')
+
+  // 点「不启用」→ 提交 set-current(null)
+  const findByKey = (node, key, out = []) => {
+    if (node === null || node === undefined || typeof node !== 'object') return out
+    if (Array.isArray(node)) { for (const item of node) findByKey(item, key, out); return out }
+    if (node.args) {
+      if (node.args[2] === key) out.push(node.args)
+      findByKey(node.args[1], key, out)
+      return out
+    }
+    for (const [name, child] of Object.entries(node)) { if (name !== 'style') findByKey(child, key, out) }
+    return out
+  }
+  const payloads = []
+  globalThis.fetch = (url, options) => {
+    payloads.push(JSON.parse(options.body))
+    return Promise.resolve({ ok: true, json: () => Promise.resolve({ ok: true, value: onValue }) })
+  }
+  findByKey(onTree, 'global-off')[0][1].onClick()
+  await new Promise((resolve) => setTimeout(resolve, 0))
+  assert.equal(payloads[0].action, 'set-current')
+  assert.equal(payloads[0].id, null, '「不启用」应提交 id:null')
+  delete globalThis.fetch
+})
+
+await check('客户端：全局不启用时输入框小条不崩、不误报', async () => {
+  seedStore({ version: 1, mode: 'global', current: null, disabled: [], personas: [], workspaces: [] })
+  const ctx = makeCtx()
+  plugin.apply(ctx, undefined)
+  const value = (await readState(ctx, { url: `${STATUS_PATH}?sessionId=s1` })).payload.value
+
+  const clientExports = loadClientWith(makeFakeReact([{ status: 'ready', value }]))
+  const tree = clientExports.PersonaDock({ t: (key) => key, sessionId: 's1' })
+  assert.ok(tree !== null && tree !== undefined, 'dock 应当正常渲染，而不是整块消失')
+  const text = collectText(tree)
+  assert.ok(text.some((line) => line.includes('🐟')), '至少保留鱼标')
+  assert.ok(!text.some((line) => line.includes('undefined')), '不该把 undefined 渲染到界面上')
+})
+
 await check('客户端 i18n：内置人名 / 简介与标点按语言取值，英文界面无中文残留', async () => {
   const ctx = makeCtx()
   plugin.apply(ctx, undefined)
@@ -1300,6 +1568,16 @@ await check('客户端 i18n：字典两份键对齐，且没有留下没人用�
     assert.equal(dicts.zh[dead], undefined, `${dead} 应已从 zh 字典移除`)
     assert.equal(dicts.en[dead], undefined, `${dead} 应已从 en 字典移除`)
   }
+
+  // 更一般地：**任何**词条都必须在代码里真的被 t("…") 取过，否则就是死键。
+  // 只靠上面那四个硬编码，新增词条时手滑多写一个不会被发现（这次就差点留下四个）。
+  const source = fs.readFileSync(path.join(root, 'lib', 'client.js'), 'utf8')
+  const referenced = new Set()
+  for (const match of source.matchAll(/t\(\s*"([A-Za-z][A-Za-z0-9]*)"\s*\)/g)) referenced.add(match[1])
+  // 动态拼出来的人设词条（personaNameXxx / personaAboutXxx）按模板判定，不参与这条检查。
+  const dynamic = (key) => key.startsWith('personaName') || key.startsWith('personaAbout')
+  const orphans = Object.keys(dicts.zh).filter((key) => !dynamic(key) && !referenced.has(key))
+  assert.deepEqual(orphans, [], `这些词条没有任何地方引用：${orphans.join('、')}`)
 
   // 英文侧的每个值都不该夹中文（这是「英文用户能看懂」的底线）。
   for (const [key, value] of Object.entries(dicts.en)) {
@@ -1681,6 +1959,177 @@ await check('客户端：导入 / 重命名失败时保留用户输入，成功�
   )
 
   delete globalThis.fetch
+})
+
+// ---------------------------------------------------------------- issue #2：新会话起始页入口
+
+await check('客户端：新会话起始页有人设 chip，选完立即对该会话生效（issue #2）', async () => {
+  const ctx = makeCtx()
+  plugin.apply(ctx, undefined)
+  await sendMutate(ctx, { action: 'set-enabled', id: 'acha', enabled: true })
+
+  // 新会话：已建 sessionId，但还没发消息（宿主判定为 hero 阶段）。
+  const NEW_SESSION = 's-new'
+  const cwd = 'C:/work/demo'
+  const value = (await readState(ctx, { url: `${STATUS_PATH}?sessionId=${NEW_SESSION}&cwd=${encodeURIComponent(cwd)}` })).payload.value
+
+  const clientExports = loadClientWith(makeFakeReact([{ status: 'ready', value }]))
+  const props = {
+    t: (key) => key,
+    sessionId: NEW_SESSION,
+    useSessions: (selector) => selector({ byId: { [NEW_SESSION]: { cwd } } }),
+  }
+  const tree = clientExports.PersonaHeroChip(props)
+
+  // chip 上要能读出「开场会用谁」以及它是可点开的
+  const text = collectText(tree)
+  assert.ok(text.some((line) => line.includes('大肥鱼')), 'chip 应显示当前会注入的人设名')
+  assert.ok(text.some((line) => line.includes('▾')), 'chip 应带「可点开」提示')
+  assert.equal(tree.args[1]['data-dsh-persona-hero'], 'dafeiyu')
+  assert.equal(tree.args[1]['aria-haspopup'], 'dialog')
+
+  // 点 chip → 同一个 bundle 里的浮层打开（两者用一个极简 store 联动）
+  const linked = loadClientWith(makeFakeReact([{ status: 'ready', value }]))
+  linked.apply({
+    effect: (callback) => callback(),
+    locale: { register: () => () => {}, bind: () => (key) => key },
+    slots: { inject: (name, callback) => callback(), register: () => () => {} },
+  })
+  const chipTree = linked.PersonaHeroChip(props)
+  assert.equal(linked.PersonaPickerOverlay({ t: (key) => key }), null, '默认应收着')
+  chipTree.args[1].onClick()
+  const opened = linked.PersonaPickerOverlay({ t: (key) => key })
+  assert.ok(opened !== null, '点 chip 后应打开居中选择浮层')
+  const pickerText = collectText(opened)
+  assert.ok(pickerText.some((line) => line.includes('pickerTitle')), '浮层应渲染标题')
+  assert.ok(pickerText.some((line) => line.includes('阿茶')), '浮层应列出库里启用的人设')
+
+  // 选一条 → 走 set-session-persona，落在这条新会话上
+  const payloads = []
+  globalThis.fetch = (url, options) => {
+    payloads.push({ url: String(url), body: options && options.body ? JSON.parse(options.body) : undefined })
+    return Promise.resolve({ ok: true, json: () => Promise.resolve({ ok: true, value }) })
+  }
+  /** 按 key 找节点（jsx/jsxs 的参数形态：[type, props, key]）。 */
+  const findByKey = (node, key, out = []) => {
+    if (node === null || node === undefined || typeof node !== 'object') return out
+    if (Array.isArray(node)) {
+      for (const item of node) findByKey(item, key, out)
+      return out
+    }
+    if (node.args) {
+      if (node.args[2] === key) out.push(node.args)
+      findByKey(node.args[1], key, out)
+      return out
+    }
+    for (const [name, child] of Object.entries(node)) {
+      if (name === 'style') continue
+      findByKey(child, key, out)
+    }
+    return out
+  }
+  const achaButton = findByKey(opened, 'picker-acha')[0]
+  assert.ok(achaButton, '浮层里应有阿茶这一项')
+  achaButton[1].onClick()
+  await new Promise((resolve) => setTimeout(resolve, 0))
+
+  const mutate = payloads.find((entry) => entry.body && entry.body.action === 'set-session-persona')
+  assert.ok(mutate, '选中后应提交 set-session-persona')
+  assert.equal(mutate.body.sessionId, NEW_SESSION, '必须落在当前新会话上')
+  assert.equal(mutate.body.personaId, 'acha')
+  assert.equal(mutate.body.cwd, cwd, '应带上工作目录，工作区那一档才有上下文')
+
+  // 关键：出厂是全局档，会话级选择会被 resolvePersona 忽略。
+  // 从 hero 选人设时应当**顺手把生效范围拔到会话档**，否则用户点了没反应。
+  const scopeChange = payloads.find((entry) => entry.body && entry.body.action === 'set-mode')
+  assert.ok(scopeChange, '应从全局档拔到会话档，否则选完不生效')
+  assert.equal(scopeChange.body.mode, 'session')
+  assert.ok(
+    payloads.findIndex((entry) => entry.body && entry.body.action === 'set-mode')
+      < payloads.findIndex((entry) => entry.body && entry.body.action === 'set-session-persona'),
+    '必须先切档、再选人设',
+  )
+
+  // 真把这两步灌回宿主侧：这条会话挑中阿茶，别的会话仍然跟着全局。
+  const appliedMode = await sendMutate(ctx, { action: 'set-mode', mode: 'session' })
+  assert.equal(appliedMode.payload.ok, true)
+  const applied = await sendMutate(ctx, { action: 'set-session-persona', sessionId: NEW_SESSION, personaId: 'acha', cwd })
+  assert.equal(applied.payload.ok, true)
+  const after = (await readState(ctx, { url: `${STATUS_PATH}?sessionId=${NEW_SESSION}&cwd=${encodeURIComponent(cwd)}` })).payload.value
+  assert.equal(after.sessionPersona.id, 'acha', '会话人设应已切到阿茶')
+  assert.equal(after.effective.id, 'acha')
+  assert.equal(after.effective.source, 'session')
+  // 另一个会话没有被牵连
+  const other = (await readState(ctx, { url: `${STATUS_PATH}?sessionId=s-other` })).payload.value
+  assert.equal(other.effective.id, 'dafeiyu', '别的会话仍用全局人设')
+  assert.equal(other.effective.source, 'global')
+
+  delete globalThis.fetch
+})
+
+await check('客户端：hero chip 选「跟随」时不误改生效范围', async () => {
+  const ctx = makeCtx()
+  plugin.apply(ctx, undefined)
+  // 库文件在用例之间共享，前面的用例可能把档位留在「会话」——这里显式归位。
+  await sendMutate(ctx, { action: 'set-mode', mode: 'global' })
+  const value = (await readState(ctx, { url: `${STATUS_PATH}?sessionId=s-new` })).payload.value
+  assert.equal(value.mode, 'global', '前置：出厂是全局档')
+
+  // 在 hero 上点开、选「跟随全局（null）」——这一步不该把生效范围拔到会话档。
+  const linked = loadClientWith(makeFakeReact([{ status: 'ready', value }]))
+  linked.apply({
+    effect: (callback) => callback(),
+    locale: { register: () => () => {}, bind: () => (key) => key },
+    slots: { inject: (name, callback) => callback(), register: () => () => {} },
+  })
+  const chip = linked.PersonaHeroChip({ t: (key) => key, sessionId: 's-new' })
+  chip.args[1].onClick()
+  const opened = linked.PersonaPickerOverlay({ t: (key) => key })
+
+  const payloads = []
+  globalThis.fetch = (url, options) => {
+    payloads.push(options && options.body ? JSON.parse(options.body) : undefined)
+    return Promise.resolve({ ok: true, json: () => Promise.resolve({ ok: true, value }) })
+  }
+  const findByKey = (node, key, out = []) => {
+    if (node === null || node === undefined || typeof node !== 'object') return out
+    if (Array.isArray(node)) { for (const item of node) findByKey(item, key, out); return out }
+    if (node.args) {
+      if (node.args[2] === key) out.push(node.args)
+      findByKey(node.args[1], key, out)
+      return out
+    }
+    for (const [name, child] of Object.entries(node)) { if (name !== 'style') findByKey(child, key, out) }
+    return out
+  }
+  findByKey(opened, 'picker-follow')[0][1].onClick()
+  await new Promise((resolve) => setTimeout(resolve, 0))
+
+  assert.equal(
+    payloads.some((body) => body && body.action === 'set-mode'),
+    false,
+    '「跟随」不该顺手改生效范围',
+  )
+  const clear = payloads.find((body) => body && body.action === 'set-session-persona')
+  assert.ok(clear, '应提交一次清除会话选择')
+  assert.equal(clear.personaId, null)
+  delete globalThis.fetch
+})
+
+await check('客户端：hero chip 在插件停用 / 读取失败时安静不渲染', () => {
+  // 读取失败：整块不渲染，开场那一屏不该因为插件多一块红字
+  const failed = loadClientWith(makeFakeReact([{ status: 'error' }]))
+  assert.equal(
+    failed.PersonaHeroChip({ t: (key) => key, sessionId: 's1' }),
+    null,
+  )
+
+  // 插件 enabled:false：选择器没有意义，也不渲染
+  const disabled = loadClientWith(makeFakeReact([{ status: 'ready', value: { enabled: false, personas: [] } }]))
+  assert.equal(
+    disabled.PersonaHeroChip({ t: (key) => key, sessionId: 's1' }),
+    null,
+  )
 })
 
 // ---------------------------------------------------------------- 包清单
