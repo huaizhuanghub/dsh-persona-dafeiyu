@@ -258,6 +258,44 @@ await check('状态接口：内置人设齐全，默认当前是大肥鱼，来�
   }
 })
 
+await check('听澜正文：精简后仍保留全部安全边界', () => {
+  const text = plugin.BUNDLED_TINGLAN
+  assert.equal(text, plugin.BUILTIN_PERSONAS.find((persona) => persona.id === 'tinglan').text)
+
+  // 这些不是"文案偏好"，是这条人设存在的理由。精简正文时逐条核对这些还在。
+  // 任何一条被删掉，都会让角色重新变得危险——所以钉在这里，而不是写在文档里。
+  const required = [
+    // 未取得执业资格：不能自称医生、不能诊疗
+    ['尚未取得执业资格', '未执业声明'],
+    ['严禁自称医生', '禁止自称医生'],
+    ['严禁提供诊疗', '禁止诊疗'],
+    // 承认是 AI，不虚构线下经历
+    ['承认自己是 AI', 'AI 自我认知'],
+    ['假装真人', '禁止假装真人'],
+    // 记忆只限本会话
+    ['本会话', '会话内记忆边界'],
+    // 危机时收起玩笑、转介线下
+    ['立刻收起玩笑', '危机时收起玩笑'],
+    ['引导寻求线下专业帮助', '转介线下资源'],
+    // 不越界诊断 / 处方
+    ['越界给诊断', '禁止越界诊断'],
+    // 不制造依赖
+    ['制造独占感', '禁止制造依赖'],
+    ['任何亲近都不能成为留住用户的手段', '不把亲近当留存手段'],
+    // 人设不能成为偷懒的借口
+    ['答案必须准确', '准确性优先'],
+    ['绝不因演人设偷懒或出错', '不因演人设出错'],
+  ]
+  for (const [needle, label] of required) {
+    assert.ok(text.includes(needle), `听澜正文缺少「${label}」（应包含：${needle}）`)
+  }
+
+  // 精简的目标：比 0.6.0 那版短。旧版 2348 字，这里给足余量只锁上界。
+  assert.ok(text.length < 2000, `听澜正文应保持精简（当前 ${text.length} 字）`)
+  assert.ok(text.length > 1200, `听澜正文不应被削到失去边界（当前 ${text.length} 字）`)
+})
+
+
 await check('正文接口：内置也能按 id 取到全文，未知 id / 缺 id / 坏方法都被拦', async () => {
   const ctx = makeCtx()
   plugin.apply(ctx, undefined)
@@ -440,6 +478,71 @@ await check('会话生效：会话挑的人设只影响该会话，其它会话�
   const back = await sendMutate(ctx, { action: 'set-mode', mode: 'global' })
   assert.equal(back.payload.value.mode, 'global')
 })
+
+await check('会话不启用人设：是终止符，不回落到工作区 / 全局', async () => {
+  const ctx = makeCtx()
+  plugin.apply(ctx, undefined)
+  const section = ctx.state.sections.find((entry) => entry.name === 'dafeiyu:persona')
+  const asSession = (id, cwd) => section.text({ agent: { session: { header: { id, cwd } } }, scope: {} })
+
+  await sendMutate(ctx, { action: 'set-enabled', id: 'acha', enabled: true })
+  // 先配一条工作区规则，才能验证「不启用」确实压过工作区（而不仅是压过全局）。
+  await sendMutate(ctx, { action: 'set-workspace-persona', cwd: '/work/proj', personaId: 'acha' })
+  await sendMutate(ctx, { action: 'set-mode', mode: 'session' })
+
+  // 前置：这个会话没选过 → 跟随工作区
+  assert.equal(asSession('sX', '/work/proj'), plugin.BUNDLED_ACHA, '前置：未选择的会话跟随工作区')
+
+  // 设成「不启用」
+  const none = await sendMutate(ctx, { action: 'set-session-persona', sessionId: 'sX', none: true })
+  assert.equal(none.payload.ok, true, `设置失败：${none.payload.error}`)
+  assert.equal(asSession('sX', '/work/proj'), '', '不启用优先于工作区选择')
+  assert.equal(asSession('sX', '/work/other'), '', '不启用也优先于全局')
+
+  // 别的会话不受影响
+  assert.equal(asSession('sY', '/work/proj'), plugin.BUNDLED_ACHA, '其它会话仍跟随工作区')
+  assert.equal(asSession('sZ', '/work/other'), plugin.BUNDLED_DAFEIYU, '其它会话仍跟随全局')
+
+  // 状态接口要能区分「不启用」与「没选」
+  const offState = (await readState(ctx, { url: `${STATUS_PATH}?sessionId=sX&cwd=${encodeURIComponent('/work/proj')}` })).payload.value
+  assert.equal(offState.sessionOff, true, 'status 应报告 sessionOff=true')
+  assert.equal(offState.sessionPersona, null, '不启用时 sessionPersona 仍是 null')
+  assert.equal(offState.effective, null, '不启用时 effective 应为 null')
+  const otherState = (await readState(ctx, { url: `${STATUS_PATH}?sessionId=sY` })).payload.value
+  assert.equal(otherState.sessionOff, false, '没选过的会话 sessionOff 应为 false')
+
+  // 改选一条人设 → 不启用状态被覆盖
+  await sendMutate(ctx, { action: 'set-session-persona', sessionId: 'sX', personaId: 'dafeiyu' })
+  assert.equal(asSession('sX', '/work/proj'), plugin.BUNDLED_DAFEIYU, '改选具体人设后不再是不启用')
+  const picked = (await readState(ctx, { url: `${STATUS_PATH}?sessionId=sX` })).payload.value
+  assert.equal(picked.sessionOff, false)
+
+  // 再设回不启用，然后用 personaId:null 清除 → 回落到工作区（清除 ≠ 不启用）
+  await sendMutate(ctx, { action: 'set-session-persona', sessionId: 'sX', none: true })
+  const cleared = await sendMutate(ctx, { action: 'set-session-persona', sessionId: 'sX', personaId: null })
+  assert.equal(cleared.payload.ok, true)
+  assert.equal(asSession('sX', '/work/proj'), plugin.BUNDLED_ACHA, '清除选择后回落到工作区，而不是继续不启用')
+
+  await sendMutate(ctx, { action: 'set-mode', mode: 'global' })
+})
+
+await check('会话不启用人设：全局档下不生效（会话选择本来就不参与）', async () => {
+  const ctx = makeCtx()
+  plugin.apply(ctx, undefined)
+  const section = ctx.state.sections.find((entry) => entry.name === 'dafeiyu:persona')
+  const asSession = (id, cwd) => section.text({ agent: { session: { header: { id, cwd } } }, scope: {} })
+
+  await sendMutate(ctx, { action: 'set-mode', mode: 'global' })
+  await sendMutate(ctx, { action: 'set-session-persona', sessionId: 'sG', none: true })
+  // 全局档的阶梯根本不查会话层，所以这里应当仍是全局人设。
+  assert.equal(asSession('sG', '/work/x'), plugin.BUNDLED_DAFEIYU, '全局档下会话不启用不该生效')
+
+  // 切到会话档后才生效
+  await sendMutate(ctx, { action: 'set-mode', mode: 'session' })
+  assert.equal(asSession('sG', '/work/x'), '', '切到会话档后生效')
+  await sendMutate(ctx, { action: 'set-mode', mode: 'global' })
+})
+
 
 await check('生效范围与会话选择的校验：非法模式 / 缺 sessionId / 未知人设都被拒', async () => {
   const ctx = makeCtx()
@@ -986,6 +1089,18 @@ function loadClientWith(fakeReact) {
   return registration.factory(fakeRequire)
 }
 
+/** 只为了拿到 zh / en 两份字典：挂一次 apply，把 register 收到的对象截下来。 */
+function captureDicts() {
+  let dicts
+  loadClientWith(makeFakeReact()).apply({
+    effect: (callback) => callback(),
+    locale: { register: (ns, dictionaries) => { dicts = dictionaries; return () => {} }, bind: () => (key) => key },
+    slots: { inject: (name, callback) => callback(), register: () => () => {} },
+  })
+  assert.ok(dicts && dicts.zh && dicts.en, '未能截获字典')
+  return dicts
+}
+
 /** 假 React：useState 支持按调用序覆盖，便于直接渲染 ready 分支。 */
 function makeFakeReact(overrides = []) {
   let index = 0
@@ -1193,7 +1308,10 @@ await check('客户端：会话人设选择是居中浮层，点人设名才打�
   const hasIn = (lines, needle) => lines.some((line) => line.includes(needle))
   assert.ok(panelText.includes('pickerTitle'), '浮层应有标题')
   assert.ok(panelText.includes('大肥鱼') && panelText.includes('阿茶'), '浮层应列出库里的人设')
-  assert.ok(hasIn(panelText, 'dockFollow'), '浮层应有「不指定」这一项')
+  // 会话档下第一项是「此会话不启用人设」，**不再是**「跟随全局」——
+  // 后者在会话档里已被移除（它的语义是「清除选择」，跟用户此刻想表达的相反）。
+  assert.ok(hasIn(panelText, 'pickerNoPersona'), '浮层应有「此会话不启用人设」这一项')
+  assert.ok(!hasIn(panelText, 'dockFollow'), '会话档的浮层不该再有「跟随全局 / 跟随工作区」')
 
   // --- 3. 选一条 → 发 set-session-persona，然后自己关掉 ---
   const payloads = []
@@ -1404,6 +1522,49 @@ await check('客户端：用真实宿主快照渲染 ready 分支（列表 / 导
   // 自导入人设：提供「查看全文」
   assert.ok(text.includes('fullText'), '自导入人设应有「查看全文」入口')
   await sendMutate(ctx, { action: 'set-current', id: 'dafeiyu' })
+})
+
+await check('客户端：人设广场入口在导入区上方，外链安全属性齐全', async () => {
+  const ctx = makeCtx()
+  plugin.apply(ctx, undefined)
+  const value = (await readState(ctx)).payload.value
+
+  const clientExports = loadClientWith(makeFakeReact([{ status: 'ready', value }]))
+  const registered = []
+  clientExports.apply({
+    effect: (callback) => callback(),
+    locale: { register: () => () => {}, bind: () => (key) => key },
+    slots: {
+      inject: (name, callback) => callback(),
+      register: (options, component) => { registered.push({ options, component }); return () => {} },
+    },
+  })
+  const tree = registered[0].component({ t: (key) => key })
+  const children = tree.args[1].children
+
+  const plazaIndex = children.findIndex((node) => node && node.args && node.args[2] === 'plaza')
+  const importIndex = children.findIndex((node) => node && node.args && node.args[2] === 'import-title')
+  assert.ok(plazaIndex >= 0, '设置页应有「人设广场」入口')
+  assert.ok(importIndex >= 0, '应仍渲染导入区标题')
+  assert.ok(plazaIndex < importIndex, '入口应排在导入区**上方**')
+
+  const plaza = children[plazaIndex]
+  const parts = plaza.args[1].children
+  // 第一部分是说明文案，第二部分是链接本身
+  assert.equal(parts[0].args[1].children, 'plazaHint', '应先渲染说明文案')
+  const anchor = parts.find((node) => node && node.args && node.args[0] === 'a')
+  assert.ok(anchor, '应有 <a> 链接（而不是按钮，才能用浏览器原生的新标签页行为）')
+  const props = anchor.args[1]
+  assert.equal(props.href, 'https://kondius.cn/qq-agent/persona-plaza/index.html')
+  assert.equal(props.target, '_blank', '外链应在新标签页打开')
+  assert.equal(props.rel, 'noopener noreferrer', '外链必须带 noopener noreferrer')
+  assert.equal(props.children, 'plazaLinkLabel')
+
+  // 文案本身也钉一下：这是产品要求的原话，别被后面的重构改掉语气
+  const dict = captureDicts()
+  assert.match(dict.zh.plazaHint, /想寻找更多个性化人设/)
+  assert.match(dict.zh.plazaHint, /人设广场/)
+  assert.ok(!/[\u4e00-\u9fff]/.test(dict.en.plazaHint), '英文文案不该夹中文')
 })
 
 await check('客户端：全局不启用时设置页显示「不启用」并可一键恢复（issue #3）', async () => {
@@ -2067,7 +2228,7 @@ await check('客户端：新会话起始页有人设 chip，选完立即对该�
   delete globalThis.fetch
 })
 
-await check('客户端：hero chip 选「跟随」时不误改生效范围', async () => {
+await check('客户端：hero chip 上选「不启用人设」时先切档、再提交 none', async () => {
   const ctx = makeCtx()
   plugin.apply(ctx, undefined)
   // 库文件在用例之间共享，前面的用例可能把档位留在「会话」——这里显式归位。
@@ -2075,7 +2236,7 @@ await check('客户端：hero chip 选「跟随」时不误改生效范围', asy
   const value = (await readState(ctx, { url: `${STATUS_PATH}?sessionId=s-new` })).payload.value
   assert.equal(value.mode, 'global', '前置：出厂是全局档')
 
-  // 在 hero 上点开、选「跟随全局（null）」——这一步不该把生效范围拔到会话档。
+  // 在 hero 上点开、选第一项「此会话不启用人设」。
   const linked = loadClientWith(makeFakeReact([{ status: 'ready', value }]))
   linked.apply({
     effect: (callback) => callback(),
@@ -2102,17 +2263,17 @@ await check('客户端：hero chip 选「跟随」时不误改生效范围', asy
     for (const [name, child] of Object.entries(node)) { if (name !== 'style') findByKey(child, key, out) }
     return out
   }
-  findByKey(opened, 'picker-follow')[0][1].onClick()
+  findByKey(opened, 'picker-none')[0][1].onClick()
   await new Promise((resolve) => setTimeout(resolve, 0))
 
-  assert.equal(
-    payloads.some((body) => body && body.action === 'set-mode'),
-    false,
-    '「跟随」不该顺手改生效范围',
-  )
-  const clear = payloads.find((body) => body && body.action === 'set-session-persona')
-  assert.ok(clear, '应提交一次清除会话选择')
-  assert.equal(clear.personaId, null)
+  // 「不启用」是会话级状态：必须先切到会话档，否则哨兵根本不会被 resolvePersona 读到。
+  const modeIdx = payloads.findIndex((body) => body && body.action === 'set-mode')
+  const noneIdx = payloads.findIndex((body) => body && body.action === 'set-session-persona')
+  assert.ok(modeIdx >= 0, '从 hero 选「不启用」时应先把生效范围拔到会话档')
+  assert.equal(payloads[modeIdx].mode, 'session')
+  assert.ok(noneIdx > modeIdx, '必须先切档、再提交不启用')
+  assert.equal(payloads[noneIdx].none, true, '应提交 none:true')
+  assert.equal(payloads[noneIdx].personaId, undefined, 'none 分支不该带 personaId')
   delete globalThis.fetch
 })
 
