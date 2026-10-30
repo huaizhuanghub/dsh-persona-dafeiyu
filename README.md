@@ -120,15 +120,19 @@ dsh plugin --profile <profile> add "<本仓库绝对路径>"
 ### 人设广场（外部链接）
 
 内置人设只有大肥鱼、阿茶、听澜三条。想找更多风格的人设，可以去
-[人设广场](https://kondius.cn/qq-agent/persona-plaza/index.html)——设置页「导入人设」上方有入口。
+[人设广场仓库](https://github.com/huaizhuanghub/dsh-persona-repository)——设置页「导入人设」上方有入口。
 
-- 它是**第三方站点**（社区分享的人设与系统提示词），不是本项目的一部分，
-  内容与可用性由对方维护；本插件不对其内容负责。
+- 它是一个**GitHub 仓库**，不是本项目的一部分，内容按投稿规则由维护者审核；
+  本插件不对其中人设的内容负责。
 - 插件**不会**访问它：链接写死在 `lib/client.js` 的 `PLAZA_URL`，只有你主动点击才会跳转，
   没有任何后台请求或埋点。
 - 用 `target="_blank"` + `rel="noopener noreferrer"` 打开：新标签页打开、且对方页面拿不到
   本页的 `window.opener`。
 - 从广场拿到的人设，用上面的「导入人设」粘进来即可，全程走同一个流程。
+
+> **为什么是仓库而不是一个专门的人设站？** 早先这里指向一个第三方人设广场站点，
+> 但那个站已经停运了，链接变成了死链。GitHub 仓库同时承担了投稿入口（PR）、
+> 审核流程和分发渠道，也不会因为某个域名到期就整站消失。
 
 正文展示的分工：
 
@@ -137,6 +141,16 @@ dsh plugin --profile <profile> add "<本仓库绝对路径>"
 - **内置人设额外带一句简介**：它们是插件自带的那几条，列表里直接说明是什么性格；
   正文同样可以展开查看，但**只读**（不可删除、不可覆盖），也**不提供导出**——
   想改就先自己导入一份。
+
+配色说明：
+
+- 界面颜色一律走宿主的 `--dsw-alias-*` 语义 token，**不写死色值**，深浅主题自动切换。
+  只有这样才能保证夜间模式下不会出现「白底浅字」。
+- 会话人设选择浮层的底色用 `--dsw-alias-bg-base`，遮罩用 `--dsw-alias-bg-mask-1`，
+  阴影用 `--dsw-elevation-panel`（宿主规范要求浮起面板 `border: 0` 配 elevation 阴影）。
+- 这些 token 都**不写浅色兜底**。曾经因为写了 `var(--dsw-alias-bg-layer, #fff)`——
+  而宿主并没有这个名字——兜底生效了整整一个版本，直到用户在夜间模式截图才发现。
+  **拼错就报错，比拼错却看起来正常要好。**
 
 规则说明：
 
@@ -415,7 +429,7 @@ CI 里的用户名常常就是 `root` 这类普通英文单词 —— 那会把 
   示例见 [`examples/config.example.yml`](examples/config.example.yml)，真实路径请留在本机、不要提交；
 - 人设库（`personas.json`）属于本地运行数据，已在 `.gitignore` 中排除；
 - **唯一的外部地址**是设置页里的「人设广场」链接
-  （`https://kondius.cn/qq-agent/persona-plaza/index.html`）。它只是一个 `<a href>`：
+  （`https://github.com/huaizhuanghub/dsh-persona-repository`）。它只是一个 `<a href>`：
   插件不向该域名发任何请求、不加载任何外部资源、不放埋点；只有你点击才会跳转，
   且以 `noopener noreferrer` 在新标签页打开。
 - 改动后请跑 `npm run privacy-check` 自查，CI 也会跑一遍。

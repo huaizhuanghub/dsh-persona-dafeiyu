@@ -1555,7 +1555,7 @@ await check('客户端：人设广场入口在导入区上方，外链安全属�
   const anchor = parts.find((node) => node && node.args && node.args[0] === 'a')
   assert.ok(anchor, '应有 <a> 链接（而不是按钮，才能用浏览器原生的新标签页行为）')
   const props = anchor.args[1]
-  assert.equal(props.href, 'https://kondius.cn/qq-agent/persona-plaza/index.html')
+  assert.equal(props.href, 'https://github.com/huaizhuanghub/dsh-persona-repository')
   assert.equal(props.target, '_blank', '外链应在新标签页打开')
   assert.equal(props.rel, 'noopener noreferrer', '外链必须带 noopener noreferrer')
   assert.equal(props.children, 'plazaLinkLabel')
