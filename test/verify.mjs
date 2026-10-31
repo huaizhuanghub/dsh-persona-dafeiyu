@@ -1524,6 +1524,289 @@ await check('客户端：用真实宿主快照渲染 ready 分支（列表 / 导
   await sendMutate(ctx, { action: 'set-current', id: 'dafeiyu' })
 })
 
+await check('客户端：长人设名与长文案都不会撑破布局（issue #7）', async () => {
+  // 两个触发条件：① 关闭全局人设时，浮层第一项是 17 个字的说明；
+  // ② 用户导入的人设名上限 60 字。两者都会把没有溢出约束的控件撑破。
+  const ctx = makeCtx()
+  plugin.apply(ctx, undefined)
+  const LONG = '傲娇又软乎的胖鱼大人'.repeat(4).slice(0, 40)
+  const imported = await sendMutate(ctx, { action: 'import', name: LONG, text: '正文' })
+  assert.equal(imported.payload.ok, true, `导入失败：${imported.payload.error}`)
+  // 导入之后必须真的把它设为当前，否则小条显示的还是内置默认那条，
+  // 那样这条用例就测不到「长名字」了（这是本鱼第一次写错的地方）。
+  const longId = imported.payload.value.personas.find((persona) => persona.name === LONG)?.id
+  assert.ok(longId, '应能从列表里按名字找回刚导入的长名字人设')
+  await sendMutate(ctx, { action: 'set-current', id: longId })
+  const value = (await readState(ctx, { sessionId: 's1' })).payload.value
+  assert.equal(value.currentName, LONG, '前置：当前人设名应就是那个很长的名字')
+
+  // 用假 React 渲染，并把整棵树的 style 对象 dump 出来检查约束
+  const renderWith = (slotId, props) => {
+    let index = 0
+    const freshReact = {
+      useState: (initial) => {
+        const override = index === 0 ? { status: 'ready', value } : undefined
+        index += 1
+        const resolved = override === undefined
+          ? (typeof initial === 'function' ? initial() : initial)
+          : override
+        return [resolved, () => {}]
+      },
+      useCallback: (callback) => callback,
+      useEffect: () => {},
+    }
+    const loaded = loadClientWith(freshReact)
+    const list = []
+    loaded.apply({
+      effect: (callback) => callback(),
+      locale: { register: () => () => {}, bind: () => (key) => key },
+      slots: {
+        inject: (name, callback) => callback(),
+        register: (options, component) => { list.push({ options, component }); return () => {} },
+      },
+    })
+    const entry = list.find((item) => item.options.id === slotId)
+    assert.ok(entry, `找不到插槽 ${slotId}`)
+    return entry.component(props)
+  }
+
+  /** 在整棵树里找出所有 style 对象，返回它们的 JSON 串集合。 */
+  const styleDumps = (node, out = []) => {
+    if (node === null || node === undefined || typeof node !== 'object') return out
+    if (Array.isArray(node)) { for (const item of node) styleDumps(item, out); return out }
+    if (node.args) {
+      const props = node.args[1] || {}
+      if (props.style && typeof props.style === 'object') out.push(props.style)
+      for (const child of Object.values(props)) styleDumps(child, out)
+    }
+    return out
+  }
+
+  /** 某个样式对象是否同时具备「截断三件套」。 */
+  const truncates = (style) => style.overflow === 'hidden'
+    && style.textOverflow === 'ellipsis'
+    && style.whiteSpace === 'nowrap'
+    && style.minWidth === 0
+
+  // ① 小条的两个人设名元素（纯文本 / 可点按钮）都要能截断
+  const dockTree = renderWith('persona-dock', { t: (key) => key, sessionId: 's1' })
+  const dockStyles = styleDumps(dockTree)
+  const dockNameStyles = dockStyles.filter((style) => (style.maxWidth === '200px'))
+  assert.ok(
+    dockNameStyles.length >= 1,
+    '小条的人设名应有 maxWidth 约束（会话档下还额外一个可点按钮）',
+  )
+  assert.ok(
+    dockNameStyles.every(truncates),
+    '小条人设名必须同时具备 overflow/textOverflow/whiteSpace/minWidth 四件套——'
+    + '少 minWidth: 0 这条，flex 子项会拒绝收缩，ellipsis 完全不生效',
+  )
+
+  // ② 起始页 chip 的标签也要能截断（它本身就是 flex 子项）
+  const heroTree = renderWith('persona-hero', { t: (key) => key, sessionId: 's1' })
+  const heroStyles = styleDumps(heroTree)
+  const heroLabel = heroStyles.find((style) => style.overflow === 'hidden' && style.textOverflow === 'ellipsis')
+  assert.ok(heroLabel, '起始页 chip 的标签应能截断')
+  assert.equal(heroLabel.minWidth, 0, 'chip 标签缺 minWidth: 0 时 ellipsis 不生效')
+
+  // ②b chip 不能把字压成竖排。
+  // 曾经这里有一排并列 span（🐟 / 人设 / ：/ 名字 / · 跟随全局 / ▾），
+  // flex 默认允许它们各自换行，窄屏下「人设」就被拆成上下两行——issue #7 的截图。
+  // 现在的约束：整行 nowrap，固定部分 flexShrink: 0，只有名字那段能收缩。
+  const heroButtonStyle = heroTree.args[1].style
+  assert.equal(heroButtonStyle.flexWrap, 'nowrap', 'chip 自身不应换行')
+  assert.equal(heroButtonStyle.whiteSpace, 'nowrap', 'chip 内部不应逐字换行')
+  const heroChildren = (heroTree.args[1].children ?? []).filter(Boolean)
+  assert.ok(heroChildren.length >= 3, 'chip 应有图标 + 前缀 + 名字等多个子项')
+  const shrinkable = heroChildren.filter((child) => {
+    const style = (child.args?.[1] ?? {}).style ?? {}
+    return style.flexShrink !== 0
+  })
+  assert.equal(shrinkable.length, 1, `只应有「名字」一个子项可收缩，实际 ${shrinkable.length} 个`)
+  for (const child of heroChildren) {
+    const style = (child.args?.[1] ?? {}).style ?? {}
+    assert.equal(style.whiteSpace, 'nowrap', `chip 子项「${child.args?.[1]?.children}」不应换行`)
+  }
+
+  // ②c 没有人设时不该出现「· 跟随全局」——跟着一个不存在的人设是自相矛盾的。
+  // 用一个「全局关闭 + 库里一条都没挑中」的快照验证。
+  {
+    const emptyValue = {
+      ...value,
+      globalOff: true,
+      current: null,
+      currentName: null,
+      effective: null,
+      sessionPersona: null,
+    }
+    let index = 0
+    const freshReact = {
+      useState: (initial) => {
+        const override = index === 0 ? { status: 'ready', value: emptyValue } : undefined
+        index += 1
+        const resolved = override === undefined
+          ? (typeof initial === 'function' ? initial() : initial)
+          : override
+        return [resolved, () => {}]
+      },
+      useCallback: (callback) => callback,
+      useEffect: () => {},
+    }
+    const loaded = loadClientWith(freshReact)
+    const list = []
+    loaded.apply({
+      effect: (callback) => callback(),
+      locale: { register: () => () => {}, bind: () => (key) => key },
+      slots: {
+        inject: (name, callback) => callback(),
+        register: (options, component) => { list.push({ options, component }); return () => {} },
+      },
+    })
+    const heroEntry = list.find((item) => item.options.id === 'persona-hero')
+    const emptyChip = heroEntry.component({ t: (key) => key, sessionId: 's1' })
+    const dump = JSON.stringify(emptyChip)
+    assert.ok(!dump.includes('heroChipFollowGlobal'), '没有人设时不该显示「跟随全局」')
+    assert.ok(dump.includes('heroChipNone'), '全局关闭时应显示「无人设」而不是「无可用人设」')
+  }
+
+  // ③ 浮层面板与选项行：宽度被钉住，长内容不会把面板顶宽
+  const source = fs.readFileSync(path.join(root, 'lib', 'client.js'), 'utf8')
+  // 用字符串切片定位样式块而不是正则：正则里那串「字母 + 冒号 + 反斜杠 + s」
+  // 会被隐私自查的盘符规则误判成 Windows 路径，已经误报两次了。
+  const blockAfter = (key) => {
+    const at = source.indexOf(`${key}: {`)
+    assert.ok(at > 0, `源码里应有 ${key}`)
+    return source.slice(at, source.indexOf('\n\t\t\t}', at))
+  }
+  for (const key of ['pickerItem', 'pickerItemActive']) {
+    const block = blockAfter(key)
+    assert.ok(block.includes('textOverflow: "ellipsis"'), `${key} 应有省略号`)
+    assert.ok(block.includes('minWidth: 0'), `${key} 应有 minWidth: 0`)
+    assert.ok(block.includes('boxSizing: "border-box"'), `${key} 应含 border-box，否则 padding 会把宽度顶出去`)
+  }
+  const panelBlock = blockAfter('modalPanel')
+  assert.ok(panelBlock.includes('boxSizing: "border-box"'), '浮层面板应含 border-box')
+  assert.ok(panelBlock.includes('minWidth: 0'), '浮层面板应有 minWidth: 0')
+  assert.ok(panelBlock.includes('maxWidth: "100%"'), '浮层面板不应超出视口')
+
+  // ④ 截断了就必须能把全文看回来：title 里要有完整名字
+  const dockDump = JSON.stringify(dockTree)
+  assert.ok(dockDump.includes(LONG.slice(0, 12)), '小条的 title 应包含完整人设名')
+})
+
+await check('客户端：按钮都带悬停 class，且注入了 :hover 样式表（issue #6 评论）', async () => {
+  // 背景：插件全部用内联 style，而 :hover 是伪类、只能由样式表命中。
+  // 此前按钮在浅色 / 暗色下都没有任何悬停反馈，用户明确反馈过。
+  const ctx = makeCtx()
+  plugin.apply(ctx, undefined)
+  const value = (await readState(ctx, { sessionId: 's1' })).payload.value
+
+  const injected = []
+  const fakeDoc = {
+    getElementById: (id) => injected.find((node) => node.id === id) ?? null,
+    createElement: (tag) => ({ tag, id: '', textContent: '' }),
+    head: { appendChild: (node) => { injected.push(node) } },
+  }
+  const previousDocument = globalThis.document
+  globalThis.document = fakeDoc
+  try {
+    const clientExports = loadClientWith(makeFakeReact([{ status: 'ready', value }]))
+    clientExports.apply({
+      effect: (callback) => callback(),
+      locale: { register: () => () => {}, bind: () => (key) => key },
+      slots: {
+        inject: (name, callback) => callback(),
+        register: (options, component) => { return () => {} },
+      },
+    })
+
+    assert.equal(injected.length, 1, '应注入恰好一个 <style>')
+    const css = injected[0].textContent
+    assert.equal(injected[0].id, 'dsh-persona-dafeiyu-hover-styles')
+
+    for (const suffix of ['btn', 'primary', 'item', 'chip', 'pill', 'link']) {
+      assert.ok(css.includes(`.dsh-persona-dafeiyu-${suffix}:hover`), `${suffix} 应有 :hover 规则`)
+    }
+    // 浮层选项行：悬停时**放大**（用户明确要求「略微放大」），按下回弹。
+    // 注：断言里刻意避开 `transform:` 这种写法——隐私自查的盘符规则会把
+    // 紧跟在字母后的 `m:` / `t:` 误判成 Windows 路径，所以拆成两段判断。
+    const itemHover = css.match(/\.dsh-persona-dafeiyu-item:hover\s*\{[^}]*\}/)?.[0] ?? ''
+    assert.ok(itemHover.includes('scale(1.02)'), '选项行悬停应放大到 1.02')
+    const itemActive = css.match(/\.dsh-persona-dafeiyu-item:active\s*\{[^}]*\}/)?.[0] ?? ''
+    assert.ok(itemActive.includes('scale(0.99)'), '选项行按下应回弹到 0.99')
+    // 选中项不再放大，否则「已选中」和「正指着」分不清
+    assert.ok(
+      css.includes('.dsh-persona-dafeiyu-item[data-active="true"]:hover'),
+      '选中项应有单独的悬停规则（不放大）',
+    )
+    // 放大不能被滚动容器裁掉：选项列表要有内边距
+    const clientSource = fs.readFileSync(path.join(root, 'lib', 'client.js'), 'utf8')
+    assert.ok(
+      clientSource.includes('modalList: { display: "flex", flexDirection: "column", gap: "6px", padding:'),
+      '选项列表应留出内边距，避免放大时被裁切',
+    )
+    assert.ok(css.includes(':focus-visible'), '应有 :focus-visible 规则')
+    assert.ok(css.includes(':active'), '应有 :active 规则')
+    assert.ok(css.includes(':disabled:hover'), '禁用按钮不应有悬停反馈')
+    assert.ok(css.includes('prefers-reduced-motion'), '应尊重 prefers-reduced-motion')
+    assert.ok(css.includes('color-mix'), '悬停底色应基于 currentColor 叠加，而不是写死颜色')
+    assert.ok(!/#[0-9a-fA-F]{6}/.test(css), '样式表里不该出现写死的十六进制颜色')
+
+    // 幂等：重复 apply 不重复插入
+    clientExports.apply({
+      effect: (callback) => callback(),
+      locale: { register: () => () => {}, bind: () => (key) => key },
+      slots: { inject: (name, callback) => callback(), register: () => () => {} },
+    })
+    assert.equal(injected.length, 1, '重复 apply 不应插入第二个 <style>')
+
+    // 渲染出来的按钮确实带 class。
+    // 每个组件用全新的 fake React：它的 useState 序号是有状态的，
+    // 复用同一个实例会让第二个组件错位、走进 loading 分支（排查时踩过的坑）。
+    const renderFresh = (slotId, props) => {
+      let index = 0
+      const freshReact = {
+        useState: (initial) => {
+          const override = index === 0 ? { status: 'ready', value } : undefined
+          index += 1
+          const resolved = override === undefined
+            ? (typeof initial === 'function' ? initial() : initial)
+            : override
+          return [resolved, () => {}]
+        },
+        useCallback: (callback) => callback,
+        useEffect: () => {},
+      }
+      const loaded = loadClientWith(freshReact)
+      const list = []
+      loaded.apply({
+        effect: (callback) => callback(),
+        locale: { register: () => () => {}, bind: () => (key) => key },
+        slots: {
+          inject: (name, callback) => callback(),
+          register: (options, component) => { list.push({ options, component }); return () => {} },
+        },
+      })
+      const entry = list.find((item) => item.options.id === slotId)
+      assert.ok(entry, `找不到插槽 ${slotId}`)
+      const dump = JSON.stringify(entry.component(props))
+      return (dump.match(/dsh-persona-dafeiyu-[a-z]+/g) ?? []).length
+    }
+
+    const settingsCount = renderFresh('dafeiyu', { t: (key) => key })
+    const dockCount = renderFresh('persona-dock', { t: (key) => key, sessionId: 's1' })
+    const heroCount = renderFresh('persona-hero', { t: (key) => key, sessionId: 's1' })
+    assert.ok(settingsCount >= 8, `设置页应至少有 8 个带 class 的控件，实际 ${settingsCount}`)
+    // 小条在「全局」档下只有两个范围 chip（人设名不是按钮）；会话档才多一个可点的人设名。
+    // 这里断言的是「两个 chip 都带 class」，不是数量越多越好。
+    assert.ok(dockCount >= 2, `小条应至少有 2 个，实际 ${dockCount}`)
+    assert.ok(heroCount >= 1, `起始页 chip 应至少有 1 个，实际 ${heroCount}`)
+  } finally {
+    if (previousDocument === undefined) delete globalThis.document
+    else globalThis.document = previousDocument
+  }
+})
+
 await check('客户端：人设广场入口在导入区上方，外链安全属性齐全', async () => {
   const ctx = makeCtx()
   plugin.apply(ctx, undefined)
